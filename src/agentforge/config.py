@@ -62,7 +62,9 @@ def load() -> Config:
             api_key=g("AGENTFORGE_TARGET_API_KEY"),
         ),
         redteam=ModelConfig(
-            base_url=g("REDTEAM_BASE_URL", "http://localhost:11434/v1"),
+            # Opt-in: empty base_url => deterministic mutation operators (no LLM).
+            # Set REDTEAM_BASE_URL to an OpenAI-compatible endpoint to enable it.
+            base_url=g("REDTEAM_BASE_URL", ""),
             model=g("REDTEAM_MODEL", "llama3.1:8b"),
             api_key=g("REDTEAM_API_KEY", "ollama"),
         ),

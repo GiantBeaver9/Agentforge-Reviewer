@@ -15,8 +15,8 @@ stdlib-based; the container installs only `httpx`, `pydantic`, `jsonschema`,
 ## Railway (Dockerfile deploy)
 
 1. **New service → Deploy from GitHub repo**, pick this repo/branch.
-2. **Root Directory:** leave as the repo root — the `Dockerfile` and
-   `railway.toml` are at the top level of this standalone repo.
+2. **Settings → Root Directory:** set to `agentforge` (so `Dockerfile` /
+   `railway.toml` are found).
 3. Railway auto-detects the Dockerfile and builds. It injects `$PORT`; the app
    binds `0.0.0.0:$PORT` automatically (via `AGENTFORGE_WEB_HOST=0.0.0.0` in the
    image).
@@ -64,11 +64,41 @@ prints a loud warning in that case.
 | `AGENTFORGE_WEB_HOST` | Bind host | `0.0.0.0` in the image |
 | `AGENTFORGE_WEB_PORT` | Fallback port if `$PORT` unset | `8800` |
 
-### Optional — LLM upgrades (fail soft to the deterministic cores if unset)
-| Var | Meaning |
-|---|---|
-| `REDTEAM_BASE_URL` / `REDTEAM_MODEL` / `REDTEAM_API_KEY` | Local/open model for richer Red Team mutations |
-| `JUDGE_BASE_URL` / `JUDGE_MODEL` / `JUDGE_API_KEY` | Independent model for LLM-assisted judging |
+### Optional — turn on the LLMs
+
+Both agents use deterministic cores by default. Set a role's `*_BASE_URL` (any
+OpenAI-compatible `/chat/completions` endpoint) to switch that role to an LLM;
+leave it empty to stay deterministic. The dashboard header shows which are
+active, and the campaign log states it per run. **No code change or toggle** —
+set the vars and redeploy.
+
+| Role | Vars | Notes |
+|---|---|---|
+| Judge | `JUDGE_BASE_URL` / `JUDGE_MODEL` / `JUDGE_API_KEY` | Independent frontier model recommended; refines uncertain verdicts |
+| Red Team | `REDTEAM_BASE_URL` / `REDTEAM_MODEL` / `REDTEAM_API_KEY` | Generates attack variants; use a model that won't refuse offensive prompts |
+
+Concrete examples (pick one per role):
+
+```
+# OpenAI
+JUDGE_BASE_URL=https://api.openai.com/v1
+JUDGE_MODEL=gpt-4o-mini
+JUDGE_API_KEY=sk-...
+
+# OpenRouter (gives you Claude/others behind one OpenAI-compatible URL)
+REDTEAM_BASE_URL=https://openrouter.ai/api/v1
+REDTEAM_MODEL=meta-llama/llama-3.1-8b-instruct
+REDTEAM_API_KEY=sk-or-...
+
+# Ollama / vLLM (self-hosted; must be reachable from the service)
+REDTEAM_BASE_URL=http://<your-ollama-host>:11434/v1
+REDTEAM_MODEL=llama3.1:8b
+REDTEAM_API_KEY=ollama
+```
+
+The deployed service needs outbound egress to whatever endpoint you set; if the
+LLM call fails, the agent falls back to its deterministic core (a run never
+stalls on an LLM outage).
 
 ### Optional — budget guardrails
 `AGENTFORGE_MAX_USD_PER_RUN`, `AGENTFORGE_MAX_ATTEMPTS_PER_CAMPAIGN`,

@@ -116,3 +116,13 @@ def test_healthz_open_and_auth_gate(monkeypatch):
         assert urllib.request.urlopen(req).status == 200
     finally:
         server.shutdown()
+
+
+def test_llm_status_reflects_env(monkeypatch):
+    monkeypatch.delenv("JUDGE_BASE_URL", raising=False)
+    monkeypatch.delenv("REDTEAM_BASE_URL", raising=False)
+    st = web._llm_status()
+    assert st["judge"] is None and st["redteam"] is None
+    monkeypatch.setenv("JUDGE_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("JUDGE_MODEL", "gpt-4o-mini")
+    assert web._llm_status()["judge"] == "gpt-4o-mini"

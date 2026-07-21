@@ -109,12 +109,24 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
             _set(job_id, status="error", error="no seed cases for that category")
             return
 
+        # Auto-engage the LLMs when they're configured (JUDGE_* / REDTEAM_* env).
+        # build_* return None when the base_url is unset, so an unconfigured
+        # deploy silently stays on the deterministic cores — no toggle needed.
+        from agentforge.agents.judge import JudgeAgent
+        from agentforge.agents.llm import build_judge_llm, build_redteam_llm
+        judge_llm = build_judge_llm(cfg)
+        redteam_llm = build_redteam_llm(cfg)
+        judge = JudgeAgent(llm=judge_llm, model_name=cfg.judge.model) if judge_llm else JudgeAgent()
+        _log(job_id, "judge: " + (f"LLM {cfg.judge.model}" if judge_llm else "deterministic rubric")
+                     + " | red team: " + (f"LLM {cfg.redteam.model}" if redteam_llm else "mutation operators"))
+
         run_id = f"camp-{uuid4().hex[:8]}"
         store = ObservabilityStore(RUNS_DIR / f"{run_id}.observability.jsonl")
         orch = OrchestratorAgent(store, CampaignState(
             max_attempts=max_attempts * rounds, max_usd=max_usd))
         result = run_campaign(
             target=target, seeds=seeds, store=store, orchestrator=orch,
+            judge=judge, redteam_llm=redteam_llm,
             pinned_pid=pid, max_rounds=rounds, max_attempts_per_round=max_attempts,
         )
 
@@ -212,6 +224,17 @@ def _categories() -> list[str]:
     return sorted(cats)
 
 
+def _llm_status() -> dict:
+    """Report which LLMs are configured (JUDGE_* / REDTEAM_* env), for the UI."""
+    from agentforge import config as cfgmod
+    cfg = cfgmod.load()
+    return {
+        "judge": cfg.judge.model if cfg.judge.base_url else None,
+        "redteam": cfg.redteam.model if cfg.redteam.base_url else None,
+        "target": cfg.target.base_url,
+    }
+
+
 # --------------------------------------------------------------------------- #
 #  HTTP handler
 # --------------------------------------------------------------------------- #
@@ -298,6 +321,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _INDEX_HTML.encode(), "text/html; charset=utf-8")
         if path == "/api/state":
             return self._json({"runs": _list_runs(), "categories": _categories(),
+                               "llm": _llm_status(),
                                "live_caps": {"max_attempts": LIVE_MAX_ATTEMPTS,
                                              "max_rounds": LIVE_MAX_ROUNDS,
                                              "max_usd": LIVE_MAX_USD}})
@@ -379,7 +403,8 @@ _INDEX_HTML = r"""<!doctype html>
   .runitem:hover{color:var(--acc)}
 </style></head><body>
 <header><h1>⚔️ AgentForge</h1>
-  <span class="sub">local control panel — multi-agent adversarial evaluation of the Clinical Co-Pilot</span>
+  <span class="sub">control panel — multi-agent adversarial evaluation of the Clinical Co-Pilot</span>
+  <span class="sub" id="llmStatus" style="margin-left:auto"></span>
 </header>
 <div class="wrap">
   <div class="left">
@@ -432,8 +457,15 @@ let poll = null;
 function caps(){ fetch("/api/state").then(r=>r.json()).then(st=>{
   const sel=$("#category"); (st.categories||[]).forEach(c=>{
     const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
-  window._caps = st.live_caps; renderRuns(st.runs);
+  window._caps = st.live_caps; renderRuns(st.runs); renderLlm(st.llm);
 }); }
+
+function renderLlm(llm){
+  if(!llm) return; const el=$("#llmStatus");
+  const j = llm.judge ? `Judge: <b>${esc(llm.judge)}</b>` : `Judge: <span class="mut">rubric</span>`;
+  const r = llm.redteam ? `Red Team: <b>${esc(llm.redteam)}</b>` : `Red Team: <span class="mut">operators</span>`;
+  el.innerHTML = `${j} &nbsp;·&nbsp; ${r}`;
+}
 
 function updateLiveWarn(){
   const dry=$("#dry").checked; $("#mockRow").style.display = dry?"block":"none";
