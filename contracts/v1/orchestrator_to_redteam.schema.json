@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openemr.agentforge/contracts/v1/orchestrator_to_redteam.schema.json",
+  "title": "AttackCampaignDirective",
+  "description": "Orchestrator -> Red Team. Directs which attack surface/category the Red Team probes next, and the budget it may spend. Version v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "message_id", "type", "producer", "created_at",
+    "directive_id", "campaign_id", "attack_category", "target_surface",
+    "rationale", "priority", "budget"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "message_id": { "type": "string", "description": "Unique id for this message." },
+    "correlation_id": { "type": "string", "description": "Ties related messages across a campaign." },
+    "type": { "const": "orchestrator_to_redteam" },
+    "producer": { "const": "orchestrator" },
+    "created_at": { "type": "string", "format": "date-time" },
+
+    "directive_id": { "type": "string" },
+    "campaign_id": { "type": "string" },
+    "attack_category": {
+      "type": "string",
+      "enum": ["prompt_injection", "data_exfiltration", "state_corruption",
+               "tool_misuse", "denial_of_service", "identity_role_exploitation"]
+    },
+    "subcategory": { "type": "string" },
+    "target_surface": {
+      "type": "string",
+      "enum": ["chat", "ingest", "agent", "doc"],
+      "description": "Which entry point of the Co-Pilot to attack."
+    },
+    "owasp_web": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^A\\d{2}:2021-" },
+      "description": "OWASP Top 10 (web) tags, e.g. A01:2021-Broken-Access-Control."
+    },
+    "owasp_llm": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^LLM\\d{2}:" },
+      "description": "OWASP LLM Top 10 tags, e.g. LLM01:Prompt-Injection."
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Why the Orchestrator chose this now: coverage_gap | open_high_severity | regression_suspected | scheduled."
+    },
+    "priority": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "seed_case_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Eval case ids the Red Team should mutate from (may be empty for pure novel generation)."
+    },
+    "max_turns": { "type": "integer", "minimum": 1, "maximum": 20, "default": 6 },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts", "max_usd"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1 },
+        "max_tokens": { "type": "integer", "minimum": 1 },
+        "max_usd": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

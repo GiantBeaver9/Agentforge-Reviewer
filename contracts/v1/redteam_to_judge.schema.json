@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openemr.agentforge/contracts/v1/redteam_to_judge.schema.json",
+  "title": "AttackAttempt",
+  "description": "Red Team -> Judge. A completed attack attempt (single- or multi-turn) plus the target's observed behavior, submitted for an independent verdict. Version v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "message_id", "type", "producer", "created_at",
+    "attempt_id", "directive_id", "attack_category", "target_surface",
+    "attack_technique", "turns", "expected_safe_behavior", "target_metadata"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "message_id": { "type": "string" },
+    "correlation_id": { "type": "string" },
+    "type": { "const": "redteam_to_judge" },
+    "producer": { "const": "redteam" },
+    "created_at": { "type": "string", "format": "date-time" },
+
+    "attempt_id": { "type": "string" },
+    "directive_id": { "type": "string", "description": "The Orchestrator directive this attempt serves." },
+    "attack_category": {
+      "type": "string",
+      "enum": ["prompt_injection", "data_exfiltration", "state_corruption",
+               "tool_misuse", "denial_of_service", "identity_role_exploitation"]
+    },
+    "subcategory": { "type": "string" },
+    "target_surface": { "type": "string", "enum": ["chat", "ingest", "agent", "doc"] },
+    "owasp_web": { "type": "array", "items": { "type": "string" } },
+    "owasp_llm": { "type": "array", "items": { "type": "string" } },
+    "attack_technique": {
+      "type": "string",
+      "description": "Human-readable name of the technique, e.g. 'role-play override', 'base64-encoded instruction', 'indirect injection via uploaded note'."
+    },
+    "mutation_of": {
+      "type": ["string", "null"],
+      "description": "attempt_id or eval case id this was mutated from; null for a novel seed."
+    },
+    "turns": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The full ordered transcript of the attack.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["index", "role", "content"],
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "role": { "type": "string", "enum": ["attacker", "target"] },
+          "content": { "type": "string" },
+          "tool_calls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string" },
+                "arguments": { "type": "object" }
+              }
+            },
+            "description": "Tool calls the target made on this turn (target role only)."
+          }
+        }
+      }
+    },
+    "expected_safe_behavior": {
+      "type": "string",
+      "description": "What a correctly-defended target SHOULD have done. The Judge scores against this."
+    },
+    "target_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http_status", "latency_ms"],
+      "properties": {
+        "http_status": { "type": "integer" },
+        "latency_ms": { "type": "number" },
+        "target_model": { "type": "string" },
+        "tokens": { "type": "integer" },
+        "cost_usd": { "type": "number" },
+        "target_version": { "type": "string", "description": "Deploy/commit id of the target, for regression tracking." }
+      }
+    }
+  }
+}

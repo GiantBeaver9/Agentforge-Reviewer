@@ -1,0 +1,14 @@
+# Railway service config for the standalone AgentForge dashboard.
+# This IS the repo root, so no Root Directory override is needed — Railway
+# auto-detects the Dockerfile here.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python -m agentforge.web"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

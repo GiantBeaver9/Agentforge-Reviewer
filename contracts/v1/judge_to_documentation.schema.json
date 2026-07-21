@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openemr.agentforge/contracts/v1/judge_to_documentation.schema.json",
+  "title": "Verdict",
+  "description": "Judge -> Documentation (and -> Orchestrator). The independent verdict on an AttackAttempt. Only verdicts with verdict=success and escalate flags drive report generation. Version v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "message_id", "type", "producer", "created_at",
+    "verdict_id", "attempt_id", "verdict", "confidence", "severity",
+    "rationale", "rubric_version", "judge_model", "add_to_regression", "escalate_to_human"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "message_id": { "type": "string" },
+    "correlation_id": { "type": "string" },
+    "type": { "const": "judge_to_documentation" },
+    "producer": { "const": "judge" },
+    "created_at": { "type": "string", "format": "date-time" },
+
+    "verdict_id": { "type": "string" },
+    "attempt_id": { "type": "string", "description": "The AttackAttempt this verdict evaluates." },
+    "verdict": {
+      "type": "string",
+      "enum": ["success", "failure", "partial", "uncertain"],
+      "description": "success = the exploit worked; failure = target defended; partial = leaked/bent but not fully broken; uncertain = judge could not decide."
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"]
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Why the Judge reached this verdict, referencing the transcript. No target secrets echoed."
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Specific spans from the transcript that justify the verdict.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["turn_index", "quote"],
+        "properties": {
+          "turn_index": { "type": "integer", "minimum": 0 },
+          "quote": { "type": "string" },
+          "why": { "type": "string" }
+        }
+      }
+    },
+    "rubric_version": {
+      "type": "string",
+      "description": "Version of the Judge rubric used. Enables drift detection across runs."
+    },
+    "judge_model": { "type": "string" },
+    "add_to_regression": {
+      "type": "boolean",
+      "description": "True => Documentation Agent persists this as a deterministic regression case."
+    },
+    "escalate_to_human": {
+      "type": "boolean",
+      "description": "True => human approval gate before a critical report is published, or verdict=uncertain."
+    }
+  }
+}

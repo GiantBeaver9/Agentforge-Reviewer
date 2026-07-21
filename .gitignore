@@ -1,0 +1,19 @@
+# local secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# local run logs / traces (observability writes here)
+runs/
+
+# local scratch databases
+*.sqlite
+*.db
+
+# keep eval fixtures tracked even though *.json could be ignored elsewhere
+!evals/**/*.json

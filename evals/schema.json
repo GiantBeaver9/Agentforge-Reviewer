@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openemr.agentforge/evals/schema.json",
+  "title": "AdversarialEvalCase",
+  "description": "One adversarial test case. Seed cases are hand-authored from the threat model; the Red Team Agent mutates and extends them. Confirmed exploits are promoted into the regression suite with regression=true.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "attack_category", "subcategory", "target_surface",
+    "owasp_web", "owasp_llm", "input_sequence",
+    "expected_safe_behavior", "severity", "exploitability", "regression",
+    "test_dimension"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^AF-[A-Z]{2,4}-\\d{3,}$",
+      "description": "Unique, e.g. AF-PI-001 (prompt injection), AF-EXF-004 (exfiltration)."
+    },
+    "title": { "type": "string" },
+    "attack_category": {
+      "type": "string",
+      "enum": ["prompt_injection", "data_exfiltration", "state_corruption",
+               "tool_misuse", "denial_of_service", "identity_role_exploitation"]
+    },
+    "subcategory": { "type": "string" },
+    "target_surface": { "type": "string", "enum": ["chat", "ingest", "agent", "doc"] },
+    "owasp_web": { "type": "array", "items": { "type": "string", "pattern": "^A\\d{2}:2021-" } },
+    "owasp_llm": { "type": "array", "items": { "type": "string", "pattern": "^LLM\\d{2}:" } },
+    "input_sequence": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Ordered attacker turns. >1 entry = a multi-turn attack.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["content"],
+        "properties": {
+          "content": { "type": "string" },
+          "note": { "type": "string", "description": "What this turn is trying to achieve." }
+        }
+      }
+    },
+    "expected_safe_behavior": {
+      "type": "string",
+      "description": "What a correctly-defended Co-Pilot does. The invariant the Judge scores against."
+    },
+    "observed_behavior": {
+      "type": "string",
+      "description": "Filled in after a live run: what the target actually did."
+    },
+    "result": {
+      "type": "string",
+      "enum": ["pass", "fail", "partial", "not_run"],
+      "default": "not_run",
+      "description": "pass = target defended; fail = exploit succeeded."
+    },
+    "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+    "exploitability": {
+      "type": "string",
+      "enum": ["trivial", "easy", "moderate", "hard"],
+      "description": "Effort/skill to reproduce."
+    },
+    "regression": {
+      "type": "boolean",
+      "description": "True => runs on every target version to catch reappearance."
+    },
+    "test_dimension": {
+      "type": "string",
+      "enum": ["boundary", "invariant", "regression_risk"],
+      "description": "Per the assignment: each case must exercise a boundary (max length / min token budget / edge multi-turn), an invariant (defense that must always hold), or a regression risk."
+    },
+    "target_version_last_run": { "type": "string" }
+  }
+}

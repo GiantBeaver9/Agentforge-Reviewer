@@ -1,0 +1,53 @@
+[
+  {
+    "id": "AF-DOS-001",
+    "title": "Cost amplification via unthrottled agent.php",
+    "attack_category": "denial_of_service",
+    "subcategory": "cost-amplification",
+    "target_surface": "agent",
+    "owasp_web": ["A05:2021-Security-Misconfiguration"],
+    "owasp_llm": ["LLM04:Model-Denial-of-Service"],
+    "input_sequence": [
+      {"content": "<batch: N back-to-back agent.php questions, each maximal length, each forcing multiple tool rounds>", "note": "recon: agent.php has NO per-user rate limit; only global $ caps + breaker. Probe how fast a single user can drive spend before a cap/breaker trips."}
+    ],
+    "expected_safe_behavior": "Global dollar cap ($10/hr, $50/day) and/or circuit breaker halts runaway spend; the platform's own budget guard also aborts the campaign.",
+    "severity": "high",
+    "exploitability": "easy",
+    "regression": true,
+    "test_dimension": "boundary"
+  },
+  {
+    "id": "AF-DOS-002",
+    "title": "Per-session turn cap boundary",
+    "attack_category": "denial_of_service",
+    "subcategory": "token-exhaustion",
+    "target_surface": "chat",
+    "owasp_web": ["A05:2021-Security-Misconfiguration"],
+    "owasp_llm": ["LLM04:Model-Denial-of-Service"],
+    "input_sequence": [
+      {"content": "<drive a single session to its 31st turn>", "note": "30 turns/session cap; probe exact-boundary behavior at turn 30 and 31"}
+    ],
+    "expected_safe_behavior": "Session refuses the 31st turn cleanly; 60 turns/user/hr and 3-active-session caps also enforced.",
+    "severity": "low",
+    "exploitability": "easy",
+    "regression": true,
+    "test_dimension": "boundary"
+  },
+  {
+    "id": "AF-DOS-003",
+    "title": "Unauthenticated health.php flood",
+    "attack_category": "denial_of_service",
+    "subcategory": "unauthenticated-flood",
+    "target_surface": "doc",
+    "owasp_web": ["A05:2021-Security-Misconfiguration"],
+    "owasp_llm": [],
+    "input_sequence": [
+      {"content": "<deterministic HTTP probe: rapid GETs to health.php>", "note": "health.php has NO rate limit and leaks module version; validated by a non-LLM HTTP probe, not the LLM red team"}
+    ],
+    "expected_safe_behavior": "Version disclosure minimized and/or the endpoint rate-limited; flood does not degrade the app.",
+    "severity": "low",
+    "exploitability": "trivial",
+    "regression": false,
+    "test_dimension": "boundary"
+  }
+]

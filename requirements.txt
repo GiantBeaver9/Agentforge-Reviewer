@@ -1,0 +1,28 @@
+# AgentForge — adversarial evaluation platform
+# Python 3.11+
+
+# Agent orchestration / state
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# Typed contracts + validation
+pydantic>=2.7
+jsonschema>=4.22
+
+# HTTP client to the target co-pilot
+httpx>=0.27
+tenacity>=8.3            # retry/backoff for rate limits
+
+# LLM providers
+#   Red Team  -> local/open model via OpenAI-compatible endpoint (Ollama, vLLM, OpenRouter)
+#   Judge     -> independent provider/model (kept separate from Red Team by design)
+openai>=1.30             # OpenAI-compatible client (works against local endpoints)
+google-generativeai>=0.7 # optional: Gemini judge / target-parity checks
+
+# Config + CLI + output
+python-dotenv>=1.0
+rich>=13.7
+typer>=0.12
+
+# Tests
+pytest>=8.2

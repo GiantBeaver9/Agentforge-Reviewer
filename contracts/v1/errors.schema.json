@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openemr.agentforge/contracts/v1/errors.schema.json",
+  "title": "AgentError",
+  "description": "Typed error any agent emits for a known failure mode. Consumers switch on error_code. Version v1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "message_id", "type", "producer", "created_at",
+    "error_code", "message", "retryable"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "message_id": { "type": "string" },
+    "correlation_id": { "type": "string" },
+    "type": { "const": "error" },
+    "producer": {
+      "type": "string",
+      "enum": ["orchestrator", "redteam", "judge", "documentation", "target_client"]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+
+    "error_code": {
+      "type": "string",
+      "enum": [
+        "target_unreachable",
+        "target_refused",
+        "rate_limited",
+        "budget_exceeded",
+        "judge_timeout",
+        "no_findings_in_window",
+        "regression_detected",
+        "invalid_message"
+      ],
+      "description": "The known failure mode. See ARCHITECTURE.md rate-limit/failure section for handling per code."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable, safe-to-log summary. MUST NOT contain target PHI, credentials, or raw exception text."
+    },
+    "retryable": { "type": "boolean" },
+    "retry_after_ms": { "type": "integer", "minimum": 0 },
+    "details": {
+      "type": "object",
+      "description": "Structured, non-sensitive context (e.g. attempted_category, budget_spent_usd)."
+    }
+  }
+}

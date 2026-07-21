@@ -1,0 +1,12 @@
+# keep the image small and never bake in secrets or local run logs
+.env
+runs/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+tests/
+docs/
+*.md
+ops/
