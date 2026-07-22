@@ -632,17 +632,25 @@ function renderRuns(runs){
   const el=$("#runs"); if(!runs){el.textContent="none yet";return;}
   let h="";
   (runs.campaigns||[]).forEach(c=>{ const s=c.summary;
-    h+=`<div class="runitem" onclick="openDetail('${c.file}','campaign')">
+    h+=`<div class="runitem" data-file="${esc(c.file)}" data-kind="campaign">
       <span class="mono">${esc(c.file)}</span>
       <span class="mut">${s.attempts} att · ${s.open_findings} find</span></div>`; });
   (runs.probes||[]).forEach(f=>{
-    h+=`<div class="runitem" onclick="openDetail('${f}','probe')">
+    h+=`<div class="runitem" data-file="${esc(f)}" data-kind="probe">
       <span class="mono">${esc(f)}</span><span class="mut">probes</span></div>`; });
   (runs.loadtests||[]).forEach(f=>{
-    h+=`<div class="runitem" onclick="openDetail('${f}','loadtest')">
+    h+=`<div class="runitem" data-file="${esc(f)}" data-kind="loadtest">
       <span class="mono">${esc(f)}</span><span class="mut">load test</span></div>`; });
   el.innerHTML = h || '<span class="mut">no runs yet — launch one above</span>';
 }
+
+// Delegated: run items carry data-file/data-kind (no inline handler, so a
+// filename can never enter a JS-string context) and this listener on the stable
+// parent survives renderRuns() replacing the children.
+$("#runs").addEventListener("click", e=>{
+  const item=e.target.closest(".runitem"); if(!item) return;
+  openDetail(item.dataset.file, item.dataset.kind);
+});
 
 function openDetail(file, kind){
   fetch("/api/file/"+encodeURIComponent(file)).then(r=>r.json()).then(d=>{
@@ -659,8 +667,8 @@ function openDetail(file, kind){
   });
 }
 
-function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>(
-  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 caps(); updateLiveWarn();
 setInterval(()=>{ if(!poll) fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs)); }, 5000);
