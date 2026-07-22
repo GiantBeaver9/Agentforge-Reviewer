@@ -17,9 +17,15 @@ kept visible on purpose rather than smoothed over.
   dashboard has a **"Trends over time"** card (`/api/history`) with an inline SVG
   defended-rate line + recent-runs table. Wired into both the web campaign job
   and the CLI `campaign` command, fail-soft. Tests in `tests/test_history.py`.
-- [ ] **Agent-response visibility tab.** Surface each Judge and Red Team raw
-  response in the dashboard, **tabbed by deterministic vs LLM-run**, so it's
-  clear which path produced each attack/verdict.
+- [x] **Agent-response visibility tab.** The campaign detail now has an **Agent
+  responses** section, tabbed **Deterministic vs LLM-run**, listing each Red Team
+  attempt (technique, attacker turn, target response) and each Judge verdict
+  (verdict, severity, confidence, model, rationale). Provenance is carried on the
+  wire: `AttackAttempt.attack_source` (set by the Red Team — `llm` when the model
+  produced the variants) and `Verdict.decision_path` (set by the Judge — `llm`
+  only when the LLM actually refined that verdict). Both are additive, optional
+  schema fields; `store.agent_responses()` surfaces them via `/api/file`. Tests
+  cover provenance in the Red Team, Judge, store, and dashboard.
 
 ## Report / schema polish
 
