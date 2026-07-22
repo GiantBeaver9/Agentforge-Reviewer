@@ -71,8 +71,8 @@ contexts), not by policy alone.
 
 ## 5. Test evidence summary
 
-- **Automated assurance:** 75 passing tests (contracts, agents, drift check,
-  probes, load, web) — `pytest tests/ -q`.
+- **Automated assurance:** 81 passing tests (contracts, agents, drift check,
+  probes, load, web, history) — `pytest tests/ -q`.
 - **Live verification:** auth handshake + full four-agent loop run against the
   deployed target; the co-pilot defended all seeded LLM attacks
   (`LIVE_RUN_EVIDENCE.md`).
@@ -96,6 +96,7 @@ test-only, so they are not in the deployed runtime.
 | jsonschema | >=4.22 | 4.26.0 | ✓ | Wire-contract validation |
 | httpx | >=0.27 | 0.28.1 | ✓ | HTTP client to target + LLM adapters |
 | tenacity | >=8.3 | 9.1.4 | — | Retry/backoff |
+| psycopg[binary] | >=3.1 | — | ✓ (opt-in) | Postgres history backend; imported only when `DATABASE_URL` is set |
 | openai | >=1.30 | 2.46.0 | — (opt-in) | OpenAI-compatible LLM client |
 | google-generativeai | >=0.7 | 0.8.6 | — (opt-in) | Optional Gemini judge |
 | python-dotenv | >=1.0 | 1.2.2 | ✓ | `.env` loading |
@@ -103,8 +104,10 @@ test-only, so they are not in the deployed runtime.
 | typer | >=0.12 | 0.27.0 | — | CLI |
 | pytest | >=8.2 | 9.1.1 | — (test) | Test runner |
 
-The web server, probes, and load test are Python-stdlib only — no third-party
-runtime is required to serve the dashboard beyond the four ✓ packages.
+The web server, probes, and load test are Python-stdlib only. The history store
+defaults to stdlib `sqlite3`; `psycopg` is pulled in only when `DATABASE_URL`
+selects the Postgres backend, so the dashboard serves with no third-party
+runtime beyond the campaign-path packages.
 
 ## 7. Dependency & platform vulnerability scan
 
@@ -168,7 +171,7 @@ event here. None has occurred in this assessment.
 |---|---|---|---|
 | 1 | Wire a live independent Judge model (adapter built; needs egress+key) | Med | Eng |
 | 2 | Automate the human-review sample for `uncertain` verdicts | Low | AppSec |
-| 3 | Persist observability to a queryable DB for multi-run trend (JSONL today) | Low | Eng |
+| 3 | ~~Persist observability to a queryable DB for multi-run trend (JSONL today)~~ **Done** — `observability/history.py` (Postgres via `DATABASE_URL`, SQLite fallback) + dashboard trends card | — | Eng |
 | 4 | Add `pip-audit` to dev-requirements so the dependency scan runs offline | Low | AppSec |
 
 ## 11. Recommendation

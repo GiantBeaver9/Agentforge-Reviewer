@@ -9,10 +9,14 @@ kept visible on purpose rather than smoothed over.
 
 ## Deferred by design (planned, not built for MVP)
 
-- [ ] **Over-time history store + dashboard tab.** Pass/fail rate is currently a
-  *cumulative per-category* ratio, not a time series. Add a small DB (e.g.
-  SQLite) to retain per-window history, and a dashboard tab to view trends over
-  time. (`observability/store.py` `pass_rate` is cumulative today.)
+- [x] **Over-time history store + dashboard tab.** Added
+  `observability/history.py` — a dual-backend `HistoryStore` that records one
+  immutable snapshot per campaign (totals + per-category pass rates). Backend is
+  **Postgres when `DATABASE_URL` is set** (durable across deploys; Railway
+  injects it) and **SQLite otherwise** (local/tests, stdlib, no new dep). The
+  dashboard has a **"Trends over time"** card (`/api/history`) with an inline SVG
+  defended-rate line + recent-runs table. Wired into both the web campaign job
+  and the CLI `campaign` command, fail-soft. Tests in `tests/test_history.py`.
 - [ ] **Agent-response visibility tab.** Surface each Judge and Red Team raw
   response in the dashboard, **tabbed by deterministic vs LLM-run**, so it's
   clear which path produced each attack/verdict.

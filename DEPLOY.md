@@ -98,6 +98,28 @@ REDTEAM_MODEL=<the model you loaded>
 REDTEAM_API_KEY=lm-studio                          # any non-empty string
 ```
 
+### Optional — durable history (Trends over time)
+
+The dashboard's **"Trends over time"** card retains one snapshot per campaign
+(totals + per-category pass rates) so you can see the defended-rate trend across
+runs. It uses two backends, chosen automatically:
+
+| Backend | When | Durability |
+|---|---|---|
+| **Postgres** | `DATABASE_URL` is set | Survives redeploys — **recommended in prod** |
+| SQLite | `DATABASE_URL` unset | Local file `runs/history.db`; **lost on redeploy** (ephemeral PaaS disk) |
+
+On **Railway**: open your project → **New → Database → Add PostgreSQL**. Railway
+provisions it and injects `DATABASE_URL` into your service automatically — no
+manual value to copy. Redeploy and the app creates its `campaign_snapshots`
+table on first write. `psycopg` is already in `requirements*.txt`; it's imported
+only when `DATABASE_URL` points at Postgres, so nothing changes if you skip it.
+
+| Var | Meaning | Default |
+|---|---|---|
+| `DATABASE_URL` | Postgres connection string (Railway injects it) | unset → SQLite |
+| `AGENTFORGE_HISTORY_DB` | Local SQLite path (only when `DATABASE_URL` unset) | `runs/history.db` |
+
 > **Recommended when you have the hardware:** run the Red Team on a local
 > open model via **LM Studio** or Ollama. It's free, never refuses offensive-
 > security prompts, and keeps attack generation off any third-party API. For a

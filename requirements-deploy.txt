@@ -7,3 +7,8 @@ httpx>=0.27
 pydantic>=2.7
 jsonschema>=4.22
 python-dotenv>=1.0
+
+# History store on Railway: DATABASE_URL points at the Postgres plugin. Omit
+# this and the dashboard still runs — it falls back to a local SQLite file
+# (which does NOT persist across redeploys, so Postgres is recommended in prod).
+psycopg[binary]>=3.1
