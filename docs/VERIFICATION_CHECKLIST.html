@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AgentForge — Independent Verification Checklist</title>
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         color: #1a1f2b; font-size: 10.5px; line-height: 1.45; margin: 0; }
+  h1 { font-size: 22px; margin: 0 0 2px; letter-spacing: -0.3px; }
+  h2 { font-size: 14px; margin: 20px 0 6px; padding-bottom: 3px;
+       border-bottom: 2px solid #2b6cb0; color: #1a365d; }
+  .sub { color: #566; font-size: 10px; margin: 0 0 10px; }
+  .meta { font-size: 9.5px; color: #667; margin-bottom: 12px; }
+  .meta b { color: #223; }
+  table { width: 100%; border-collapse: collapse; margin: 4px 0 8px; }
+  th, td { border: 1px solid #d3d9e3; padding: 4px 6px; vertical-align: top; text-align: left; }
+  th { background: #eef3fa; font-weight: 600; font-size: 9.5px; }
+  td { font-size: 9.5px; }
+  td.num { width: 24px; text-align: center; color: #667; }
+  code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 8.8px;
+         background: #f2f4f8; padding: 0 2px; border-radius: 2px; }
+  .v { font-weight: 700; white-space: nowrap; font-size: 9px; padding: 1px 5px;
+      border-radius: 3px; display: inline-block; }
+  .met  { background: #d7f0dd; color: #1b6b34; }
+  .part { background: #fbe9c8; color: #8a5a00; }
+  .miss { background: #f6d3d3; color: #9b1c1c; }
+  .pass-badge { background: #1b6b34; color: #fff; }
+  .partial-badge { background: #8a5a00; color: #fff; }
+  .cluster-verdict { font-size: 9.5px; margin: 0 0 4px; padding: 5px 8px;
+                     background: #f7f9fc; border-left: 3px solid #2b6cb0; }
+  .scorecard { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+  .card { border: 1px solid #d3d9e3; border-radius: 5px; padding: 6px 9px; min-width: 128px; }
+  .card .t { font-size: 8.5px; text-transform: uppercase; letter-spacing: .4px; color: #667; }
+  .card .b { font-size: 11px; font-weight: 700; margin-top: 1px; }
+  .lead { background: #f7f9fc; border: 1px solid #dde3ec; border-radius: 6px;
+          padding: 9px 12px; margin: 8px 0 4px; font-size: 10px; }
+  .tag { font-size: 8.5px; color: #445; }
+  ul.gaps { margin: 4px 0 0; padding-left: 16px; }
+  ul.gaps li { margin: 2px 0; font-size: 9.5px; }
+  .foot { margin-top: 14px; font-size: 8.5px; color: #889; border-top: 1px solid #dde3ec; padding-top: 6px; }
+  .avoidbreak { break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>AgentForge — Independent Verification Checklist</h1>
+<p class="sub">Adversarial multi-agent audit of the MVP against the Gauntlet AI Week-3 rubric</p>
+<p class="meta">
+  <b>Target under test:</b> oe-module-clinical-copilot @ abundant-art-production-d560.up.railway.app &nbsp;·&nbsp;
+  <b>Method:</b> 10 independent skeptical sub-agent auditors + 1 docs-vs-code drift audit &nbsp;·&nbsp;
+  <b>Rule:</b> a check is MET only with concrete evidence the auditor personally read; otherwise MISSING &nbsp;·&nbsp;
+  <b>Date:</b> 2026-07-22
+</p>
+
+<div class="lead">
+  <b>Bottom line — SUBMISSION-READY MVP.</b> Four distinct agents (Orchestrator, Red Team, Judge,
+  Documentation) over a deterministic substrate, <b>70/70 tests green</b>, verified live against the deployed
+  co-pilot (which defended every seeded attack — an honest negative result), plus 3 real deterministic findings
+  on the unauthenticated surface. Of 12 audit areas: <b>9 PASS, 3 PARTIAL, drift = CLEAN (corrected)</b>. No PARTIAL blocks
+  submission; each is a small, named gap listed here rather than smoothed over. The three drift nitpicks the audit
+  found (test count, formula wording, LangGraph framing) have been corrected. LLMs are opt-in config, not a missing build.
+</div>
+
+<div class="scorecard">
+  <div class="card"><div class="t">Areas passing</div><div class="b">9 / 12</div></div>
+  <div class="card"><div class="t">Partial (non-blocking)</div><div class="b">3</div></div>
+  <div class="card"><div class="t">Tests</div><div class="b">70 passed</div></div>
+  <div class="card"><div class="t">Drift audit</div><div class="b">CLEAN ✓</div></div>
+  <div class="card"><div class="t">Attack categories</div><div class="b">5 (17 cases)</div></div>
+  <div class="card"><div class="t">Error contracts</div><div class="b">5 / 5 modes</div></div>
+</div>
+
+<!-- 1 -->
+<h2>1 · Threat Model &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">All seven checks substantiated by direct reading of <code>THREAT_MODEL.md</code>.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>THREAT_MODEL.md exists</td><td><span class="v met">MET</span></td><td>14 KB, "Clinical Co-Pilot — Adversarial Threat Model"</td></tr>
+<tr><td class="num">2</td><td>~500-word summary: findings, top-risk categories, prioritization</td><td><span class="v met">MET</span></td><td>§Summary = 505 words; 4 findings tagged HIGH/MED/LOW + explicit Prioritization para</td></tr>
+<tr><td class="num">3</td><td>All 6 categories with required sub-vectors</td><td><span class="v met">MET</span></td><td>PI (direct/indirect/multi-turn), exfil, state-corruption, tool-misuse, DoS, identity — each with real content</td></tr>
+<tr><td class="num">4</td><td>Each category: surface, impact, difficulty, existing defense</td><td><span class="v met">MET</span></td><td>Every table has Surface · Impact · Difficulty · Existing-defense · Coverage columns</td></tr>
+<tr><td class="num">5</td><td>OWASP Web Top 10 mapping</td><td><span class="v met">MET</span></td><td>Coverage map: A01, A03, A04, A05, A09 (subset, real)</td></tr>
+<tr><td class="num">6</td><td>OWASP LLM Top 10 mapping</td><td><span class="v met">MET</span></td><td>LLM01/02/04/06/08 mapped + per-section tags</td></tr>
+<tr><td class="num">7</td><td>Framed as a living document</td><td><span class="v met">MET</span></td><td>"This is a living document… Orchestrator rebalances coverage"</td></tr>
+</table>
+<p class="tag">Nit: "infinite loops" is addressed under tool-misuse (ChainBudget) rather than the DoS section — substantively covered.</p>
+
+<!-- 2 -->
+<h2>2 · Architecture Document &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">All 14 checks MET; 487-word summary, <code>contracts/v1</code> schemas and every referenced source file confirmed on disk.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>~500-word summary</td><td><span class="v met">MET</span></td><td>Measured 487 words</td></tr>
+<tr><td class="num">2</td><td>Names each agent: role, I/O, trust, coordination</td><td><span class="v met">MET</span></td><td>Orchestrator(high)/Red Team(low)/Judge(high)/Documentation(med) + I/O contract table</td></tr>
+<tr><td class="num">3</td><td>Agent-interaction diagram</td><td><span class="v met">MET</span></td><td>Mermaid flowchart, all 4 agents + target + human + substrate</td></tr>
+<tr><td class="num">4</td><td>Which agent owns each function</td><td><span class="v met">MET</span></td><td>gen→RT, eval→Judge, orchestration→Orch, docs→Documentation</td></tr>
+<tr><td class="num">5</td><td>Inter-agent message format</td><td><span class="v met">MET</span></td><td>Versioned JSON-Schema; named types + shared <code>correlation_id</code></td></tr>
+<tr><td class="num">6</td><td>How Orchestrator picks next target</td><td><span class="v met">MET</span></td><td>Priority = coverage-gap + open-severity; highest cell dispatched</td></tr>
+<tr><td class="num">7</td><td>Judge verdicts → regression harness</td><td><span class="v met">MET</span></td><td>success Verdict → Documentation → invariant regression case</td></tr>
+<tr><td class="num">8</td><td>Human approval gates + why</td><td><span class="v met">MET</span></td><td>Critical publish, uncertain verdict, before any remediation</td></tr>
+<tr><td class="num">9</td><td>AI vs deterministic + justification</td><td><span class="v met">MET</span></td><td>"Why deterministic-first" section + per-sub-problem decision table</td></tr>
+<tr><td class="num">10</td><td>Cost / rate limits / scale</td><td><span class="v met">MET</span></td><td>Per-run budget, halt, local Red Team, 100/1K/10K/100K projections</td></tr>
+<tr><td class="num">11</td><td>Names state/coordination framework</td><td><span class="v met">MET</span></td><td>Python + LangGraph (<code>build_langgraph</code>)</td></tr>
+<tr><td class="num">12</td><td>AI-use disclosure + drifting-Judge detect/correct</td><td><span class="v met">MET</span></td><td>Per-agent gate table + ground-truth drift: mislabel ⇒ rubric change rejected</td></tr>
+<tr><td class="num">13</td><td>Build-vs-configure record (ZAP/Burp/Semgrep/Garak/commercial)</td><td><span class="v met">MET</span></td><td>Named tools w/ Covers / Falls-short columns + justification</td></tr>
+<tr><td class="num">14</td><td>Rate-limit + auth for external APIs (backoff/queue/abort)</td><td><span class="v met">MET</span></td><td>Target CSRF+session, LLM key + exponential backoff on <code>rate_limited</code></td></tr>
+</table>
+
+<!-- 3 -->
+<h2>3 · Evaluation Suite &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">5 categories, 17 cases, unique ids, schema-valid; ground_truth pins the Judge with defended + known-leak labels.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>≥3 attack categories</td><td><span class="v met">MET</span></td><td>5: prompt_injection, data_exfiltration, tool_misuse, denial_of_service, identity_role_exploitation</td></tr>
+<tr><td class="num">2</td><td>All required per-case fields (a–f)</td><td><span class="v met">MET</span></td><td>category+sub, input_sequence, expected_safe_behavior, result enum, severity+exploitability, regression flag</td></tr>
+<tr><td class="num">3</td><td>OWASP web and/or LLM tags</td><td><span class="v met">MET</span></td><td>Every case has both arrays (one has empty llm, still has web)</td></tr>
+<tr><td class="num">4</td><td>Boundary + invariant + regression coverage</td><td><span class="v met">MET</span></td><td>invariant 9 · boundary 6 · regression_risk 2; 16/17 regression:true</td></tr>
+<tr><td class="num">5</td><td>Unique ids</td><td><span class="v met">MET</span></td><td>17 ids, zero duplicates, all match id pattern</td></tr>
+<tr><td class="num">6</td><td>Schema exists + cases validate</td><td><span class="v met">MET</span></td><td>draft-2020-12, additionalProperties:false; all 17 validate</td></tr>
+<tr><td class="num">7</td><td>ground_truth.json pins the Judge</td><td><span class="v met">MET</span></td><td>7 labeled attempts (real defended + synthetic known-leak)</td></tr>
+</table>
+<p class="tag">Nit: cases don't pre-instantiate the <code>result</code>/<code>observed_behavior</code> run-state (rely on schema default <code>not_run</code>).</p>
+
+<!-- 4 -->
+<h2>4 · Red Team · Judge · Orchestrator (code) &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">Three genuinely distinct agents; independent transcript-only Judge with drift check; Orchestrator scores/halts/triggers regression; LLM adapters fail soft.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>Distinct agents, distinct trust</td><td><span class="v met">MET</span></td><td>3 classes; RT "trust LOW", Judge "HIGH, independent", Orch "HIGH deterministic-first"</td></tr>
+<tr><td class="num">2</td><td>Generate + mutate + multi-turn</td><td><span class="v met">MET</span></td><td>4 mutators (roleplay/base64/authority/politeness) + multi-turn sequence loop</td></tr>
+<tr><td class="num">3</td><td>Judge independent (generator ≠ grader)</td><td><span class="v met">MET</span></td><td>Scores "from the transcript alone" via invariant; never sees RT goal/self-assessment</td></tr>
+<tr><td class="num">4</td><td>Drift check + versioned rubric</td><td><span class="v met">MET</span></td><td><code>RUBRIC_VERSION="1.0.0"</code>; <code>check_ground_truth()</code> collects mismatches</td></tr>
+<tr><td class="num">5</td><td>Defense precedence over leak-keyword</td><td><span class="v met">MET</span></td><td><code>if defended: return "failure"</code> evaluated before <code>if leaked</code></td></tr>
+<tr><td class="num">6</td><td>Prioritizes + can halt</td><td><span class="v met">MET</span></td><td><code>score_cells</code> sorts; <code>halt_check</code> → budget_exceeded / no_findings_in_window</td></tr>
+<tr><td class="num">7</td><td>Regression on target change</td><td><span class="v met">MET</span></td><td><code>target_changed(current_version)</code></td></tr>
+<tr><td class="num">8</td><td>LLM adapters fail soft to deterministic</td><td><span class="v met">MET</span></td><td>try/except → None/[]; factories return None when base_url unset; consumers fall back</td></tr>
+</table>
+
+<!-- 5 -->
+<h2>5 · Documentation · Regression · Reports &nbsp;<span class="v partial-badge">PARTIAL</span></h2>
+<div class="cluster-verdict">Machinery is real and well-built (invariant regression, dedupe, data-quality gating, human gate). Two gaps: no explicit exploitability field / optional evidence, and no critical example exercises the gate.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>Documentation agent: Verdict → structured report</td><td><span class="v met">MET</span></td><td><code>DocumentationAgent.document()</code>, guards non-success</td></tr>
+<tr><td class="num">2</td><td>All required report fields</td><td><span class="v part">PARTIAL</span></td><td>Has id/title/severity/category/surface/repro/evidence/recommendation/impact. <b>Missing explicit <code>exploitability</code></b> (only Judge <code>confidence</code>); <code>evidence</code> not required</td></tr>
+<tr><td class="num">3</td><td>Human gate on critical before publish</td><td><span class="v met">MET</span></td><td><code>status = PENDING_HUMAN if severity=="critical"</code></td></tr>
+<tr><td class="num">4</td><td>De-dup + unique ids</td><td><span class="v met">MET</span></td><td><code>dedupe_reports()</code> keeps highest-confidence; deterministic finding_id</td></tr>
+<tr><td class="num">5</td><td>Regression = invariant, not string match</td><td><span class="v met">MET</span></td><td><code>regression.py</code>: <code>passed = verdict != "success"</code> — re-judges the replay</td></tr>
+<tr><td class="num">6</td><td>Data-quality validation</td><td><span class="v met">MET</span></td><td><code>DataQualityError</code> on wrong verdict / mismatched ids / no turns / empty fields</td></tr>
+<tr><td class="num">7</td><td>≥3 concrete reports</td><td><span class="v part">PARTIAL</span></td><td>3 present (all Low/Med probe findings). <b>No critical example</b> exercises the approval path</td></tr>
+</table>
+
+<!-- 6 -->
+<h2>6 · Observability Layer &nbsp;<span class="v partial-badge">PARTIAL</span></h2>
+<div class="cluster-verdict">5 of 6 questions + correlation_id traceability cleanly MET; rollups code-deterministic. Gap: pass/fail "over time" is a cumulative ratio, no time-series; determinism untested.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>Coverage per category</td><td><span class="v met">MET</span></td><td><code>coverage()</code> keyed by (category, surface)</td></tr>
+<tr><td class="num">2</td><td>Pass/fail rate over time</td><td><span class="v part">PARTIAL</span></td><td><code>pass_rate</code> is <b>cumulative per category</b>, not time-bucketed. Needs a small history store</td></tr>
+<tr><td class="num">3</td><td>Open findings</td><td><span class="v met">MET</span></td><td><code>open_findings()</code> = success verdicts, sorted by severity</td></tr>
+<tr><td class="num">4</td><td>Cost / budget spent</td><td><span class="v met">MET</span></td><td><code>cost_usd()</code> sums per-event + metadata cost</td></tr>
+<tr><td class="num">5</td><td>Timeline / chronological view</td><td><span class="v met">MET</span></td><td><code>timeline()</code> sorted by stored observed_at</td></tr>
+<tr><td class="num">6</td><td>Deterministic rollups</td><td><span class="v met">MET</span></td><td>All rollups pure over the JSONL log; no clock/random in aggregation (no test guards it)</td></tr>
+<tr><td class="num">7</td><td>correlation_id threads all 4 agents</td><td><span class="v met">MET</span></td><td>Orch sets → RT → Judge → Documentation propagate; surfaced in timeline</td></tr>
+</table>
+
+<!-- 7 -->
+<h2>7 · Contracts + Error Schemas &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">Four versioned v1 schemas, typed error contract covering all 5 required modes, mirroring validated Pydantic models, dual-sided contract tests, integration packet.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>Versioned contracts (orch→rt, rt→judge, judge→doc)</td><td><span class="v met">MET</span></td><td>3 schemas in <code>contracts/v1/</code></td></tr>
+<tr><td class="num">2</td><td>Typed error contract: 5 failure modes</td><td><span class="v met">MET</span></td><td>enum has target_unreachable, budget_exceeded, judge_timeout, no_findings_in_window, regression_detected</td></tr>
+<tr><td class="num">3</td><td>Contracts versioned</td><td><span class="v met">MET</span></td><td><code>v1/</code> + <code>schema_version const "1.0.0"</code> + <code>$id</code></td></tr>
+<tr><td class="num">4</td><td>Pydantic models mirror schemas</td><td><span class="v met">MET</span></td><td><code>AttackAttempt</code> fields match schema; <code>to_wire()</code> validates</td></tr>
+<tr><td class="num">5</td><td>Contract tests: valid passes + invalid rejected</td><td><span class="v met">MET</span></td><td><code>test_golden_example_validates</code> + <code>test_missing_required_field_is_rejected</code></td></tr>
+<tr><td class="num">6</td><td>Integration packet</td><td><span class="v met">MET</span></td><td><code>INTEGRATION_PACKET.md</code> integration table + CI/CD tiers + regression-on-version</td></tr>
+</table>
+
+<!-- 8 -->
+<h2>8 · Cost Analysis + Load / Baseline &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">All six checks met with real, cross-corroborated data — the canonical 100-request run matches the doc exactly.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>Spend at 100/1K/10K/100K, sublinear gating</td><td><span class="v met">MET</span></td><td>4-scale table ($0.24→$238); deterministic-gate lever quantified at 100K</td></tr>
+<tr><td class="num">2</td><td>Real provider prices + per-call cost</td><td><span class="v met">MET</span></td><td>Named models w/ $/MTok; OpenRouter fee note</td></tr>
+<tr><td class="num">3</td><td>Baseline latency + throughput</td><td><span class="v met">MET</span></td><td>c=1: 2.55 req/s, p50 382 / p95 438 / p99 506 ms</td></tr>
+<tr><td class="num">4</td><td>~100-req load test w/ percentiles</td><td><span class="v met">MET</span></td><td>100 req/level across c=1/5/10/20; raw JSON matches</td></tr>
+<tr><td class="num">5</td><td>loadtest.py computes percentiles + sweep</td><td><span class="v met">MET</span></td><td><code>pct()</code> nearest-rank + <code>sweep(concurrencies=(1,5,10,20))</code></td></tr>
+<tr><td class="num">6</td><td>Bottleneck named</td><td><span class="v met">MET</span></td><td>"PHP-FPM worker-pool saturation on the single Railway instance"</td></tr>
+</table>
+
+<!-- 9 -->
+<h2>9 · ATO Packet · Triage · Users &nbsp;<span class="v partial-badge">PARTIAL</span></h2>
+<div class="cluster-verdict">Architecture, triage (10 findings), and USERS.md are solid. ATO packet omits SBOM, vuln-scan note, incident-response section, and its own dashboard auth gate.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>Architecture + data-flow diagram</td><td><span class="v met">MET</span></td><td>§1 system + §2 ASCII boundary diagram</td></tr>
+<tr><td class="num">2</td><td>Auth model (AgentForge + target)</td><td><span class="v part">PARTIAL</span></td><td>Target handshake stated; <b>own dashboard Basic-auth gate not mentioned</b> (exists in <code>web.py</code>)</td></tr>
+<tr><td class="num">3</td><td>Dependencies with versions</td><td><span class="v miss">MISSING</span></td><td>No SBOM; versions live only in <code>requirements.txt</code>, unreferenced</td></tr>
+<tr><td class="num">4</td><td>Vuln-scan note + test evidence</td><td><span class="v part">PARTIAL</span></td><td>Test evidence present; <b>no pip-audit/safety CVE scan</b></td></tr>
+<tr><td class="num">5</td><td>Incident-response / postmortem</td><td><span class="v miss">MISSING</span></td><td>Has residual-risk + POA&amp;M only; no IR runbook</td></tr>
+<tr><td class="num">6</td><td>Triage ~10 findings w/ severity + disposition</td><td><span class="v met">MET</span></td><td>F1–F10, severity+owner+SLA; incl. deliberate false-positive + duplicate pair</td></tr>
+<tr><td class="num">7</td><td>USERS.md: users, workflows, automate-vs-human</td><td><span class="v met">MET</span></td><td>3 users, UC1–UC6, "where automation stops (deliberately)"</td></tr>
+</table>
+
+<!-- 10 -->
+<h2>10 · Repo Hygiene + Tests + Deploy &nbsp;<span class="v pass-badge">PASS</span></h2>
+<div class="cluster-verdict">70/70 tests green, no secrets committed, LangGraph present, all deploy artifacts in place. Demo video is the one human TODO.</div>
+<table>
+<tr><th class="num">#</th><th>Requirement</th><th>Verdict</th><th>Evidence / Gap</th></tr>
+<tr><td class="num">1</td><td>README: setup, arch, deployed link, run instructions</td><td><span class="v met">MET</span></td><td>All four present</td></tr>
+<tr><td class="num">2</td><td>Test suite passes</td><td><span class="v met">MET</span></td><td><code>pytest tests/ -q</code> → <b>70 passed in 2.17s</b></td></tr>
+<tr><td class="num">3</td><td>Live URL + not-mock evidence</td><td><span class="v met">MET</span></td><td><code>LIVE_RUN_EVIDENCE.md</code>: verified handshake + <code>camp-0cc5dbaf</code> attempts=8 verdicts=8</td></tr>
+<tr><td class="num">4</td><td>No secrets committed; .env gitignored</td><td><span class="v met">MET</span></td><td><code>.env</code> untracked; grep of tracked files clean</td></tr>
+<tr><td class="num">5</td><td>LangGraph integration in code</td><td><span class="v met">MET</span></td><td><code>build_langgraph()</code> builds real StateGraph, 4 nodes; optional import guarded</td></tr>
+<tr><td class="num">6</td><td>Demo video + social post</td><td><span class="v part">PARTIAL</span></td><td>Script + social drafts exist; <b>video itself = human TODO</b></td></tr>
+<tr><td class="num">7</td><td>Deploy artifacts</td><td><span class="v met">MET</span></td><td>Dockerfile, railway.toml, requirements-deploy.txt, DEPLOY.md all present</td></tr>
+</table>
+
+<!-- Drift -->
+<h2>11 · Docs-vs-Code Drift Audit &nbsp;<span class="v pass-badge">CLEAN — corrected</span></h2>
+<div class="cluster-verdict">Docs are unusually honest — they correctly credit the 3 findings to the deterministic probes (not the Red Team) and frame the target's V3/pinning/redaction defenses as attack targets, never as AgentForge features. The three overstatements the audit found have been corrected in this pass (marked FIXED below).</div>
+<table>
+<tr><th class="num">#</th><th>Claim (doc)</th><th>Reality (code)</th><th>Verdict</th></tr>
+<tr><td class="num">1</td><td>"39 passing tests" (README ×2, ARCHITECTURE ×1); "63" (ATO)</td><td><code>pytest</code> → 70 passed; docs updated to 70</td><td><span class="v met">FIXED</span></td></tr>
+<tr><td class="num">2</td><td>Orchestrator <code>priority = severity_weight + coverage_gap + regression_suspicion</code></td><td>Reworded to match code: <code>base_priority × coverage_gap + open_weight</code></td><td><span class="v met">FIXED</span></td></tr>
+<tr><td class="num">3</td><td>"LangGraph manages agent state and coordination"</td><td>Reworded: plain-Python <code>run_campaign</code> canonical, LangGraph optional drop-in</td><td><span class="v met">FIXED</span></td></tr>
+<tr><td class="num">4</td><td>"3 confirmed live findings", "verified live"</td><td>Probe JSON + <code>camp-0cc5dbaf</code> artifacts exist; findings attributed to probe harness honestly</td><td><span class="v met">MATCH</span></td></tr>
+<tr><td class="num">5</td><td>Target defenses (pinning/V3/redaction) framed as attack targets</td><td>THREAT_MODEL: "invariants the platform must try to break" — never claimed as own</td><td><span class="v met">MATCH</span></td></tr>
+<tr><td class="num">6</td><td>Judge defense-precedence; status-table "✅ complete" rows</td><td>Code ordering matches; every "complete" row maps to substantive non-stub code</td><td><span class="v met">MATCH</span></td></tr>
+</table>
+
+<!-- Gaps summary -->
+<h2 class="avoidbreak">Consolidated gap list (tracked in <code>docs/TODO.md</code>)</h2>
+<div class="avoidbreak">
+<ul class="gaps">
+  <li><b>Corrected this pass:</b> test count 39/63 → 70; Orchestrator formula wording; LangGraph framing.</li>
+  <li><b>Deferred by design:</b> over-time history DB + dashboard trend tab; agent-response tab split deterministic vs LLM-run.</li>
+  <li><b>Report polish:</b> add explicit <code>exploitability</code> field; make <code>evidence</code> required; add a critical-severity example to exercise the human gate; add a determinism test.</li>
+  <li><b>ATO packet:</b> SBOM/dependency-version table; vuln-scan (pip-audit/safety) note; incident-response section; state the dashboard Basic-auth gate.</li>
+  <li><b>Config, not code:</b> optionally set <code>JUDGE_BASE_URL</code> / <code>REDTEAM_BASE_URL</code> to enable real LLMs (fail soft to deterministic if unset).</li>
+</ul>
+</div>
+
+<p class="foot">
+  Generated from 10 independent adversarial sub-agent audits + 1 docs-vs-code drift audit, each instructed to mark a
+  check MET only against evidence it personally read. PARTIAL/MISSING items are non-blocking for MVP submission and are
+  tracked in <code>docs/TODO.md</code>. Test count and live-run artifacts independently re-confirmed on disk (70 passed).
+</p>
+
+</body>
+</html>

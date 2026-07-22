@@ -56,9 +56,12 @@ local model makes the expensive part (many generations/mutations) nearly free;
 the frontier model is spent only where judgement quality matters (Judge, Docs).
 See `docs/COST_ANALYSIS.md` for 100/1K/10K/100K projections.
 
-**Framework.** Python + LangGraph manages agent state and coordination; the
-target is PHP and is reached only over HTTP, so the language split is a
-non-issue. State (attempts, verdicts, coverage) persists to a queryable store so
+**Framework.** The canonical runner is a dependency-free plain-Python loop
+(`run_campaign`) that owns agent state and coordination; a **LangGraph-compatible**
+graph (`build_langgraph`, four typed nodes over `StateGraph`) is provided as an
+optional drop-in and is exercised when `langgraph` is installed, otherwise the
+plain-Python runner is used. The target is PHP and is reached only over HTTP, so
+the language split is a non-issue. State (attempts, verdicts, coverage) persists to a queryable store so
 runs are resumable and auditable.
 
 ---
@@ -153,12 +156,17 @@ flowchart TD
 ## Orchestration strategy
 
 The Orchestrator scores each (category × surface) cell by:
-`priority = severity_weight(open findings) + coverage_gap + regression_suspicion`.
-It dispatches the Red Team at the highest-scoring cell, with a budget sized to
-remaining run dollars. A campaign halts when: budget hit (`budget_exceeded`), N
-consecutive attempts yield no new signal (`no_findings_in_window`), or the
-target freezes. When the target's deploy id changes, the Orchestrator triggers a
-full regression run before any new exploration.
+`priority = base_priority × coverage_gap + open_weight`, where
+`coverage_gap = 1 / (1 + attempts)` (an un-probed cell gets the full gap and it
+saturates as the cell is exercised) and `open_weight` is a severity weight added
+when the cell already has confirmed (open) findings, so the Red Team keeps
+pressure where the target is weakest. Regression is *not* a term in this score —
+it is a separate trigger (see below). It dispatches the Red Team at the
+highest-scoring cell, with a budget sized to remaining run dollars. A campaign
+halts when: budget hit (`budget_exceeded`), N consecutive attempts yield no new
+signal (`no_findings_in_window`), or the target freezes. When the target's
+deploy id changes, the Orchestrator triggers a full regression run before any
+new exploration.
 
 ## Judge independence & drift control
 
@@ -234,7 +242,7 @@ multi-turn, coverage-driven, clinically-judged parts they don't cover.
 | Judge LLM (frontier) | API key | queue + exponential backoff on `rate_limited` |
 
 _Status: all four agents and the deterministic substrate are now implemented and
-tested (39 passing tests). Built: the versioned Contracts; the Red Team agent
+tested (70 passing tests). Built: the versioned Contracts; the Red Team agent
 (verified live against the deployed target); the Judge (deterministic rubric
 `1.0.0` + ground-truth drift check); the Documentation agent (report + regression
 case + human gate on critical); the Orchestrator (coverage/severity scoring +

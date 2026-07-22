@@ -30,7 +30,7 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | Observability store (append-only, deterministic rollups) | ✅ complete, tests green |
 | LangGraph pipeline wiring (4 agents over typed edges) | ✅ complete (`pipeline.py`) |
 
-All four agents and the deterministic substrate are implemented — **39 passing
+All four agents and the deterministic substrate are implemented — **70 passing
 tests** — and the full loop has been run live against the deployed co-pilot
 (which defended the seeded attacks). Remaining work is submission packaging
 (cost analysis, triage exercise, ATO/load evidence, demo) — see
@@ -139,5 +139,5 @@ agentforge/
     loadtest.py          # baseline load test of the cheap unauth surface
     cli.py               # redteam | campaign | judge | dashboard | probe | web | loadtest
   tests/                 # contracts, models, redteam, observability, judge,
-                         # documentation, orchestrator+pipeline, regression (39 green)
+                         # documentation, orchestrator+pipeline, regression (70 green)
 ```
