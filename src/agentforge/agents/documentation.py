@@ -23,10 +23,43 @@ PENDING_HUMAN = "pending_human_approval"
 PUBLISHED = "published"
 
 _REQUIRED_REPORT_FIELDS = (
-    "finding_id", "title", "severity", "attack_category", "target_surface",
-    "owasp_web", "owasp_llm", "reproduction", "expected_safe_behavior",
-    "observed_behavior", "impact", "recommendation", "status",
+    "finding_id", "title", "severity", "exploitability", "attack_category",
+    "target_surface", "owasp_web", "owasp_llm", "reproduction",
+    "expected_safe_behavior", "observed_behavior", "impact", "recommendation",
+    "status",
+    # A confirmed finding must carry its proof citation. The deterministic Judge
+    # always emits >=1 evidence item on a success verdict (judge.py `_score`), so
+    # requiring it costs the deterministic path nothing and closes the door on an
+    # evidence-less report shipping from an LLM judge that skipped it.
+    "evidence",
 )
+
+_EXPLOITABILITY_LEVELS = ("easy", "moderate", "hard")
+
+
+def _derive_exploitability(attempt: dict[str, Any]) -> str:
+    """Rate how hard the confirmed exploit is to reproduce, from attempt *shape*.
+
+    Deterministic and evidence-free on purpose (ARCHITECTURE.md §"AI vs
+    deterministic"): the rubric asks for severity **and** exploitability, and
+    exploitability is a property of the reproduction, not a judgement call — so
+    we read it off the attempt rather than ask a model.
+
+    - ``easy``: one direct attacker turn that reproduces the leak — a single
+      request replays it.
+    - ``moderate``: a discovered variant (a mutation of a seed) or a two-turn
+      exchange — some crafting or a setup turn is required.
+    - ``hard``: a chain of three or more attacker turns — the exploit needs
+      multi-step state to reproduce.
+    """
+    attacker_turns = [t for t in attempt.get("turns", []) if t.get("role") == "attacker"]
+    n = len(attacker_turns)
+    is_variant = bool(attempt.get("mutation_of")) or attempt.get("attack_technique") == "mutation"
+    if n >= 3:
+        return "hard"
+    if n == 2 or is_variant:
+        return "moderate"
+    return "easy"
 
 
 class DataQualityError(ValueError):
@@ -38,6 +71,7 @@ class VulnerabilityReport:
     finding_id: str
     title: str
     severity: str
+    exploitability: str               # easy | moderate | hard (derived from shape)
     attack_category: str
     target_surface: str
     owasp_web: list[str]
@@ -60,6 +94,7 @@ class VulnerabilityReport:
             "finding_id": self.finding_id,
             "title": self.title,
             "severity": self.severity,
+            "exploitability": self.exploitability,
             "attack_category": self.attack_category,
             "target_surface": self.target_surface,
             "owasp_web": self.owasp_web,
@@ -145,6 +180,7 @@ class DocumentationAgent:
             finding_id=f"AF-FIND-{attempt['attempt_id'].removeprefix('att-')}",
             title=title,
             severity=severity,
+            exploitability=_derive_exploitability(attempt),
             attack_category=category,
             target_surface=attempt["target_surface"],
             owasp_web=attempt.get("owasp_web", []),
@@ -178,6 +214,7 @@ class DocumentationAgent:
             "regression": True,
             "attack_category": report.attack_category,
             "subcategory": "confirmed_exploit",
+            "exploitability": report.exploitability,
             "target_surface": report.target_surface,
             "owasp_web": report.owasp_web,
             "owasp_llm": report.owasp_llm,
@@ -206,6 +243,10 @@ class DocumentationAgent:
                 raise DataQualityError(f"report missing required field: {f}")
         if not (0.0 <= report.confidence <= 1.0):
             raise DataQualityError("confidence out of range [0,1]")
+        if report.exploitability not in _EXPLOITABILITY_LEVELS:
+            raise DataQualityError(
+                f"exploitability must be one of {_EXPLOITABILITY_LEVELS}; "
+                f"got {report.exploitability!r}")
 
 
 def dedupe_reports(reports: list[VulnerabilityReport]) -> list[VulnerabilityReport]:
