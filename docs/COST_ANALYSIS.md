@@ -92,28 +92,32 @@ overhead on top:
 | Route | Token price | Route overhead | Best for |
 |---|---|---|---|
 | **Direct** (Anthropic / OpenAI / Google) | provider list | none | a single committed model |
-| **OpenRouter** | pass-through — **no per-token markup** | ~5% fee on credit top-ups; BYOK option; some `:free` rate-limited variants | routing to **multiple** families through one key + one balance |
+| **OpenRouter** | pass-through — **no per-token markup**; equals the routed provider's list price | **5.5%** fee on pay-as-you-go credit top-ups; some `:free` rate-limited variants. **BYOK:** fee-free up to $25K/mo of list-price inference, then 5% | routing to **multiple** families through one key + one balance |
 | **HF Inference Providers** | pay-per-token, routed to a backend | dedicated Inference Endpoints (paid) for a specific uncensored model not on serverless | the **open/uncensored Red Team** catalog |
 | **Local** (Ollama / vLLM) | ~$0 marginal | your own GPU / host | high-volume Red Team at zero token cost |
 
 Because OpenRouter is pass-through, it's the pragmatic pick for this system: one
 account routes the frontier **Judge** and the open **Red Team** simultaneously,
 which is exactly the independent split the architecture wants. At the volumes
-below, the ~5% top-up fee is rounding error (a $5 credit runs dozens of live
-campaigns).
+below the **5.5%** top-up fee is rounding error (a $5 credit runs dozens of live
+campaigns); at high volume, **BYOK removes the platform fee** (fee-free to
+$25K/mo of list-price inference), so the platform fee never becomes a scaling
+term — you converge on the underlying providers' raw token cost.
 
-**Per-model reference prices** ($/1M tokens). *Confirm on the provider's page —
-these move; only the Claude rows are pinned to the current catalog:*
+**Per-model token prices are not hardcoded here on purpose.** On OpenRouter the
+price *is* the routed provider's list price, and it moves — so the source of
+truth is [`openrouter.ai/models`](https://openrouter.ai/models) (filter by model,
+read in/out $/MTok), not a table that rots. Only the pinned rows below are stable
+enough to keep in-repo:
 
 | Model (typical role) | In $/MTok | Out $/MTok |
 |---|---:|---:|
 | `claude-sonnet-5` (Judge) | 3.00 (intro 2.00) | 15.00 (intro 10.00) |
 | `claude-opus-4-8` (Judge, top) | 5.00 | 25.00 |
 | `claude-haiku-4-5` (Judge, budget) | 1.00 | 5.00 |
-| `gpt-4o-mini` (Judge) | _verify_ | _verify_ |
-| `gemini-2.0-flash` (Judge) | _verify_ | _verify_ |
-| `qwen2.5-72b-instruct` (open Judge) | _verify_ | _verify_ |
-| `llama-3.1-8b-instruct` (Red Team) | _verify_ (cents) | _verify_ (cents) |
+| open Red Team (`llama-3.1-8b` class) | cents/MTok — often < $0.10 in / < $0.20 out; `:free` rate-limited variants exist | — |
+| open Judge (`qwen2.5-72b` / `llama-3.3-70b` class) | check `openrouter.ai/models` | — |
+| `gpt-4o-mini` / `gemini-*-flash` (Judge) | check the provider / `openrouter.ai/models` | — |
 
 ## Effective spend at scale — the deterministic gate
 
