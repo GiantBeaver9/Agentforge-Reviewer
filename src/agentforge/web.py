@@ -261,7 +261,8 @@ def _read_json_file(name: str):
             from agentforge.observability.store import ObservabilityStore
             store = ObservabilityStore(p)
             return {"summary": store.summary(), "open_findings": store.open_findings(),
-                    "timeline": store.timeline()}
+                    "timeline": store.timeline(),
+                    "agent_responses": store.agent_responses()}
         return json.loads(p.read_text())
     except Exception as exc:  # noqa: BLE001 — a partial/malformed run file is not fatal
         return {"error": f"could not parse {safe}: {type(exc).__name__}"}
@@ -468,6 +469,11 @@ _INDEX_HTML = r"""<!doctype html>
   .runitem{display:flex;justify-content:space-between;padding:6px 0;
     border-bottom:1px solid var(--line);cursor:pointer}
   .runitem:hover{color:var(--acc)}
+  .tabs{display:flex;gap:6px;margin:6px 0 10px}
+  .tab{width:auto;margin:0;padding:5px 12px;background:transparent;
+    border:1px solid var(--line);color:var(--mut);font-weight:600;border-radius:20px}
+  .tab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  h4{font-size:12px;margin:12px 0 4px}
 </style></head><body>
 <header><h1>⚔️ AgentForge</h1>
   <span class="sub">control panel — multi-agent adversarial evaluation of the Clinical Co-Pilot</span>
@@ -690,9 +696,57 @@ function openDetail(file, kind){
         <b class="${sevClass(v.severity)}">${esc(v.severity).toUpperCase()}</b>
         attempt <span class="mono">${esc(v.attempt_id)}</span> — ${esc(v.rationale||"")}</div>`).join("")
       : '<p class="mut">No open findings in this run.</p>';
+    h+=agentResponsesHtml(d.agent_responses);
     $("#detail").innerHTML=h;
   });
 }
+
+// Agent responses, tabbed by which path produced each attack/verdict.
+function agentResponsesHtml(ar){
+  if(!ar || (!(ar.attempts||[]).length && !(ar.verdicts||[]).length)) return "";
+  const det=provGroup(ar,"deterministic"), llm=provGroup(ar,"llm");
+  return `<h3>Agent responses</h3>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-prov="deterministic">Deterministic (${det.n})</button>
+      <button class="tab" data-prov="llm">LLM-run (${llm.n})</button></div>
+    <div class="provpane" data-prov="deterministic">${det.html}</div>
+    <div class="provpane" data-prov="llm" style="display:none">${llm.html}</div>`;
+}
+
+function provGroup(ar, prov){
+  const at=(ar.attempts||[]).filter(a=>(a.attack_source||"deterministic")===prov);
+  const vd=(ar.verdicts||[]).filter(v=>(v.decision_path||"deterministic")===prov);
+  const n=at.length+vd.length;
+  if(!n) return {n:0, html:`<p class="mut">Nothing was produced by the ${prov} path in this run.</p>`};
+  let h="";
+  if(at.length){
+    h+=`<h4 class="mut">Red Team — ${at.length} attempt${at.length>1?"s":""}</h4>`+
+      `<table><tr><th>technique</th><th>category / surface</th><th>attacker</th><th>target response</th></tr>`+
+      at.map(a=>`<tr><td>${esc(a.attack_technique)}</td>
+        <td class="mut">${esc(a.attack_category)} / ${esc(a.target_surface)}</td>
+        <td>${esc(a.attacker)}</td><td class="mut">${esc(a.target)}</td></tr>`).join("")+`</table>`;
+  }
+  if(vd.length){
+    h+=`<h4 class="mut">Judge — ${vd.length} verdict${vd.length>1?"s":""}</h4>`+
+      `<table><tr><th>verdict</th><th>sev</th><th>conf</th><th>model</th><th>rationale</th></tr>`+
+      vd.map(v=>`<tr><td>${esc(v.verdict)}</td>
+        <td class="${sevClass(v.severity)}">${esc(v.severity)}</td>
+        <td>${v.confidence==null?"":Number(v.confidence).toFixed(2)}</td>
+        <td class="mono">${esc(v.judge_model)}</td>
+        <td class="mut">${esc(v.rationale)}</td></tr>`).join("")+`</table>`;
+  }
+  return {n, html:h};
+}
+
+// Delegated: tab clicks toggle the visible provenance pane. Listener sits on the
+// stable #detail parent so it survives openDetail() replacing the content.
+$("#detail").addEventListener("click", e=>{
+  const tab=e.target.closest(".tab"); if(!tab) return;
+  const root=tab.closest("#detail"); const prov=tab.dataset.prov;
+  root.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t===tab));
+  root.querySelectorAll(".provpane").forEach(p=>{
+    p.style.display = (p.dataset.prov===prov) ? "" : "none"; });
+});
 
 function renderTrends(){
   fetch("/api/history").then(r=>r.json()).then(h=>{

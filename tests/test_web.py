@@ -81,6 +81,15 @@ def test_dashboard_serves_and_runs_dry_campaign():
         assert hist["backend"] == "sqlite"             # no DATABASE_URL in tests
         run_id = result["result"]["run_id"]
         assert any(s["run_id"] == run_id for s in hist["series"]), hist
+
+        # the run's observability file exposes agent responses with provenance
+        detail = json.loads(urllib.request.urlopen(
+            base + "/api/file/" + result["result"]["observability"]).read())
+        ar = detail["agent_responses"]
+        assert ar["attempts"] and ar["verdicts"]
+        # deterministic dry-run -> everything tagged deterministic
+        assert all(a["attack_source"] == "deterministic" for a in ar["attempts"])
+        assert all(v["decision_path"] == "deterministic" for v in ar["verdicts"])
     finally:
         server.shutdown()
 

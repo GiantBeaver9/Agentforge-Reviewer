@@ -173,6 +173,48 @@ class ObservabilityStore:
         rows.sort(key=lambda r: r.get("observed_at") or "")
         return rows
 
+    def agent_responses(self, clip: int = 400) -> dict[str, Any]:
+        """Raw Red Team attempts and Judge verdicts, each tagged with its
+        provenance (deterministic vs LLM), for the dashboard's agent-response
+        view. Turn/rationale text is clipped so the payload stays light.
+
+        ``attack_source``/``decision_path`` default to ``deterministic`` for
+        older logs written before those fields existed.
+        """
+        def _clip(s: str) -> str:
+            s = s or ""
+            return s if len(s) <= clip else s[:clip] + "…"
+
+        attempts = []
+        for a in self._by_type(ATTEMPT):
+            turns = a.get("turns", [])
+            attacker = next((t.get("content", "") for t in turns
+                             if t.get("role") == "attacker"), "")
+            targets = [t.get("content", "") for t in turns if t.get("role") == "target"]
+            attempts.append({
+                "attempt_id": a.get("attempt_id"),
+                "attack_category": a.get("attack_category"),
+                "target_surface": a.get("target_surface"),
+                "attack_technique": a.get("attack_technique"),
+                "attack_source": a.get("attack_source", "deterministic"),
+                "attacker": _clip(attacker),
+                "target": _clip(targets[-1] if targets else ""),
+            })
+
+        verdicts = []
+        for v in self._by_type(VERDICT):
+            verdicts.append({
+                "verdict_id": v.get("verdict_id"),
+                "attempt_id": v.get("attempt_id"),
+                "verdict": v.get("verdict"),
+                "severity": v.get("severity"),
+                "confidence": v.get("confidence"),
+                "judge_model": v.get("judge_model"),
+                "decision_path": v.get("decision_path", "deterministic"),
+                "rationale": _clip(v.get("rationale", "")),
+            })
+        return {"attempts": attempts, "verdicts": verdicts}
+
     def summary(self) -> dict[str, Any]:
         """One dict the dashboard/CLI can render and the Orchestrator can score."""
         cov = self.coverage()

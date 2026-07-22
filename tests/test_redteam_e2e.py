@@ -36,3 +36,24 @@ def test_budget_is_respected():
     agent = RedTeamAgent(MockTargetClient("defended"))
     attempts = agent.run_directive(_directive(n=3), [_seed()])
     assert len(attempts) <= 3
+
+
+def test_attack_source_provenance():
+    # No LLM -> the seed and every mutation are deterministic.
+    attempts = RedTeamAgent(MockTargetClient("defended")).run_directive(_directive(), [_seed()])
+    assert {a["attack_source"] for a in attempts} == {"deterministic"}
+    for a in attempts:
+        SCHEMA.validate(a)             # attack_source must be contract-valid
+
+    # With an LLM red team, the seed stays deterministic but mutations are tagged llm.
+    class _LLM:
+        def variants(self, seed, n=4):
+            return [f"llm variant {i}" for i in range(n)]
+
+    llm_attempts = RedTeamAgent(MockTargetClient("defended"), llm=_LLM()).run_directive(
+        _directive(), [_seed()])
+    by_tech = {a["attack_technique"]: a["attack_source"] for a in llm_attempts}
+    assert by_tech["seed"] == "deterministic"
+    assert by_tech["mutation"] == "llm"
+    for a in llm_attempts:
+        SCHEMA.validate(a)

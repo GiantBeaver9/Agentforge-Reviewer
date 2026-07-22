@@ -33,6 +33,11 @@
       "type": "string",
       "description": "Human-readable name of the technique, e.g. 'role-play override', 'base64-encoded instruction', 'indirect injection via uploaded note'."
     },
+    "attack_source": {
+      "type": "string",
+      "enum": ["deterministic", "llm"],
+      "description": "Which path generated this attempt's attacker turns: deterministic mutation operators or an LLM red-team model. Optional (older logs omit it)."
+    },
     "mutation_of": {
       "type": ["string", "null"],
       "description": "attempt_id or eval case id this was mutated from; null for a novel seed."
