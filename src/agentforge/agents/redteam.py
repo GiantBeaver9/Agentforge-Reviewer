@@ -75,7 +75,7 @@ class RedTeamAgent:
         """
         budget = directive["budget"]["max_attempts"]
         max_turns = directive.get("max_turns", 6)
-        attempts: list[dict] = []
+        attempts: list[dict | None] = []  # _run_one may return None; filtered on return
 
         for seed in seed_cases:
             if len(attempts) >= budget:
@@ -115,6 +115,9 @@ class RedTeamAgent:
                 if surface == "agent":
                     last = self.target.agent_ask(self.pid, attacker_msg)
                 else:
+                    # chat surface always started a session above; assert the
+                    # invariant so the type is str, not str | None.
+                    assert session_id is not None
                     last = self.target.chat_turn(session_id, attacker_msg)
                 turns.append(Turn(index=len(turns), role="target",
                                   content=last.content,

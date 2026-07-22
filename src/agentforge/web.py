@@ -75,7 +75,7 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
     from agentforge.agents.orchestrator import CampaignState, OrchestratorAgent
     from agentforge.observability.store import ObservabilityStore
     from agentforge.pipeline import run_campaign
-    from agentforge.target.client import MockTargetClient, OpenEmrTargetClient
+    from agentforge.target.client import MockTargetClient, OpenEmrTargetClient, TargetClient
 
     try:
         dry_run = bool(params.get("dry_run", True))
@@ -92,6 +92,7 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
 
         cfg = cfgmod.load()
         _set(job_id, status="running")
+        target: TargetClient
         if dry_run:
             policy = params.get("mock_policy", "defended")
             target = MockTargetClient(policy=policy)

@@ -116,7 +116,7 @@ def cmd_redteam(args: argparse.Namespace) -> int:
 
     print(f"ran {len(attempts)} attempts across {len(seeds)} seeds -> {path}")
     for a in attempts[: args.show]:
-        target_turn = next((t for t in a["turns"] if t["role"] == "target"), {})
+        target_turn: dict = next((t for t in a["turns"] if t["role"] == "target"), {})
         print(f"  {a['attempt_id']} [{a['attack_technique']:8}] "
               f"{a['attack_category']:22} -> {target_turn.get('content', '')[:70]!r}")
     return 0

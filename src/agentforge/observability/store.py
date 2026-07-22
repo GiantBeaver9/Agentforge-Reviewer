@@ -123,10 +123,10 @@ class ObservabilityStore:
             cell(a["attack_category"], a["target_surface"]).attempts += 1
 
         for v in self._by_type(VERDICT):
-            a = attempts.get(v.get("attempt_id"))
-            if a is None:
+            att = attempts.get(v.get("attempt_id"))
+            if att is None:
                 continue  # verdict for an attempt this log did not capture
-            c = cell(a["attack_category"], a["target_surface"])
+            c = cell(att["attack_category"], att["target_surface"])
             c.verdicts += 1
             outcome = v.get("verdict")
             if outcome == "success":
