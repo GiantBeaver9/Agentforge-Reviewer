@@ -48,14 +48,27 @@ class Config:
     budget: BudgetConfig
 
 
+def _normalize_base_url(url: str) -> str:
+    """Tidy a target base URL: trim, add a scheme if the user omitted one, drop a
+    trailing slash. ``my-host.up.railway.app`` -> ``https://my-host.up.railway.app``.
+    An empty value stays empty (callers surface a clear 'not set' message)."""
+    url = (url or "").strip()
+    if url and not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url.rstrip("/")
+
+
 def load() -> Config:
     def g(key: str, default: str = "") -> str:
-        return os.environ.get(key, default)
+        # os.environ.get returns "" for a var that is SET but empty, which would
+        # shadow the default; treat blank as unset so the default applies.
+        val = os.environ.get(key)
+        return val if (val is not None and val.strip() != "") else default
 
     return Config(
         target=TargetConfig(
-            base_url=g("AGENTFORGE_TARGET_BASE_URL",
-                       "https://abundant-art-production-d560.up.railway.app"),
+            base_url=_normalize_base_url(g("AGENTFORGE_TARGET_BASE_URL",
+                       "https://abundant-art-production-d560.up.railway.app")),
             auth_mode=g("AGENTFORGE_TARGET_AUTH_MODE", "session"),
             username=g("AGENTFORGE_TARGET_USERNAME"),
             password=g("AGENTFORGE_TARGET_PASSWORD"),

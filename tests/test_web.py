@@ -126,3 +126,16 @@ def test_llm_status_reflects_env(monkeypatch):
     monkeypatch.setenv("JUDGE_BASE_URL", "https://api.openai.com/v1")
     monkeypatch.setenv("JUDGE_MODEL", "gpt-4o-mini")
     assert web._llm_status()["judge"] == "gpt-4o-mini"
+
+
+def test_base_url_normalization_and_guard(monkeypatch):
+    from agentforge import config as cfgmod
+    # scheme-less URL gets https:// and trailing slash trimmed
+    monkeypatch.setenv("AGENTFORGE_TARGET_BASE_URL", "my-host.up.railway.app/")
+    assert cfgmod.load().target.base_url == "https://my-host.up.railway.app"
+    # blank falls back to the default (not an empty string that breaks httpx)
+    monkeypatch.setenv("AGENTFORGE_TARGET_BASE_URL", "   ")
+    assert cfgmod.load().target.base_url.startswith("https://")
+    # explicit http:// is preserved
+    monkeypatch.setenv("AGENTFORGE_TARGET_BASE_URL", "http://localhost:8300")
+    assert cfgmod.load().target.base_url == "http://localhost:8300"

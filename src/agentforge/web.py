@@ -97,6 +97,11 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
             target = MockTargetClient(policy=policy)
             _log(job_id, f"dry-run mock target (policy={policy})")
         else:
+            if not cfg.target.base_url:
+                _set(job_id, status="error",
+                     error="AGENTFORGE_TARGET_BASE_URL is not set — set it to the "
+                           "target's URL (e.g. https://your-openemr.up.railway.app)")
+                return
             _log(job_id, f"live target {cfg.target.base_url} — logging in…")
             client = OpenEmrTargetClient(cfg.target, csrf_pid=pid)
             client.login()
@@ -154,6 +159,11 @@ def _run_probe_job(job_id: str, params: dict) -> None:
     from agentforge.probes import ProbeHarness
     try:
         cfg = cfgmod.load()
+        if not cfg.target.base_url:
+            _set(job_id, status="error",
+                 error="AGENTFORGE_TARGET_BASE_URL is not set — set it to the "
+                       "target's URL (e.g. https://your-openemr.up.railway.app)")
+            return
         _set(job_id, status="running")
         _log(job_id, f"probing {cfg.target.base_url}")
         results = ProbeHarness(cfg.target.base_url).run_all()
@@ -374,6 +384,7 @@ _INDEX_HTML = r"""<!doctype html>
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;
     color:var(--mut);margin:0 0 10px}
   label{display:block;font-size:12px;color:var(--mut);margin:8px 0 3px}
+  label.help{cursor:help} label.help:hover{color:var(--acc)}
   input,select{width:100%;padding:7px 9px;background:var(--bg);color:var(--ink);
     border:1px solid var(--line);border-radius:7px;font:inherit}
   .row{display:flex;gap:8px} .row>*{flex:1}
@@ -415,12 +426,12 @@ _INDEX_HTML = r"""<!doctype html>
       <div id="mockRow"><label>Mock policy</label>
         <select id="policy"><option value="defended">defended (target resists)</option>
           <option value="leaky">leaky (regressed build that leaks)</option></select></div>
-      <label>Category</label>
-      <select id="category"><option value="">all categories</option></select>
+      <label class="help" title="Which attack category to focus on. 'all' lets the Orchestrator pick the highest-priority category×surface cell each round.">Category ⓘ</label>
+      <select id="category" title="Which attack category to focus on. 'all' lets the Orchestrator pick the highest-priority category×surface cell each round."><option value="">all categories</option></select>
       <div class="row">
-        <div><label>Rounds</label><input id="rounds" type="number" value="2" min="1"></div>
-        <div><label>Attempts/round</label><input id="attempts" type="number" value="4" min="1"></div>
-        <div><label>Pinned pid</label><input id="pid" type="number" value="1" min="1"></div>
+        <div><label class="help" title="Orchestrator rounds. Each round the Orchestrator picks the highest-priority attack cell (category × surface) and dispatches the Red Team at it. More rounds = broader coverage across categories. The run also stops early if a round finds nothing new (no_findings_in_window) or the budget cap is hit.">Rounds ⓘ</label><input id="rounds" type="number" value="2" min="1" title="Orchestrator rounds. Each round targets the highest-priority attack cell; more rounds = broader coverage. Stops early on no-new-findings or budget."></div>
+        <div><label class="help" title="Attempts the Red Team runs per round = one seed attack plus its mutations, each a full multi-turn exchange with the target. Higher = deeper probing of one cell, but more of the target's LLM budget spent per round.">Attempts/round ⓘ</label><input id="attempts" type="number" value="4" min="1" title="Per round: 1 seed attack + its mutations, each a full multi-turn exchange. Higher = deeper probing of one cell, more target LLM budget spent."></div>
+        <div><label class="help" title="The patient ID the co-pilot session is pinned to. The target scopes its answers to this one patient; attacks try to make it leak or act outside that scope. Must be a patient that exists on the target with a seeded synthesis doc (pid 1 on the dev deploy). It's also the pid whose page the CSRF token is scraped from.">Pinned pid ⓘ</label><input id="pid" type="number" value="1" min="1" title="Patient ID the session is pinned to. Attacks try to break out of this patient's scope. Must exist on the target with a seeded doc (pid 1 on dev); also the pid the CSRF token is scraped from."></div>
       </div>
       <p id="liveWarn" class="warn" style="display:none;font-size:12px;margin:8px 0 0"></p>
       <button id="runCamp">▶ Launch campaign</button>
