@@ -144,6 +144,15 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
         reports_path.write_text(json.dumps([r.to_dict() for r in result.reports], indent=2))
 
         summary = store.summary()
+        # Persist a cross-run snapshot for the trends view. Fail-soft: a history
+        # write (e.g. Postgres unreachable) must never fail a completed campaign.
+        try:
+            from agentforge.observability.history import HistoryStore
+            hist = HistoryStore(sqlite_path=RUNS_DIR / "history.db")
+            hist.record_snapshot(run_id, summary, mode="dry-run" if dry_run else "live")
+            _log(job_id, f"history snapshot recorded ({hist.backend})")
+        except Exception as exc:  # noqa: BLE001
+            _log(job_id, f"note: history snapshot skipped ({type(exc).__name__}: {exc})")
         _log(job_id, f"done: {summary['attempts']} attempts, "
                      f"{summary['verdicts']} verdicts, {summary['open_findings']} findings, "
                      f"halt={result.halt.reason if result.halt else None}")
@@ -256,6 +265,17 @@ def _read_json_file(name: str):
         return json.loads(p.read_text())
     except Exception as exc:  # noqa: BLE001 — a partial/malformed run file is not fatal
         return {"error": f"could not parse {safe}: {type(exc).__name__}"}
+
+
+def _history() -> dict:
+    """Cross-run trend series for the dashboard. Fail-soft: an unreachable DB
+    returns an empty series with the error, never a 500."""
+    try:
+        from agentforge.observability.history import HistoryStore
+        return HistoryStore(sqlite_path=RUNS_DIR / "history.db").trends()
+    except Exception as exc:  # noqa: BLE001
+        return {"backend": "unavailable", "count": 0, "series": [],
+                "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _categories() -> list[str]:
@@ -377,6 +397,8 @@ class Handler(BaseHTTPRequestHandler):
             data = _read_json_file(name)
             return self._json(data if data is not None else {"error": "not found"},
                               200 if data is not None else 404)
+        if path == "/api/history":
+            return self._json(_history())
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):  # noqa: N802
@@ -494,6 +516,10 @@ _INDEX_HTML = r"""<!doctype html>
       <h2>Current job <span id="jobStatus" class="pill"></span></h2>
       <div class="log" id="jobLog"></div>
       <div id="jobResult"></div>
+    </div>
+    <div class="card">
+      <h2>Trends over time <span id="histBackend" class="mut" style="font-size:11px"></span></h2>
+      <div id="trends" class="mut">loading…</div>
     </div>
     <div class="card">
       <h2>Runs</h2>
@@ -668,11 +694,51 @@ function openDetail(file, kind){
   });
 }
 
+function renderTrends(){
+  fetch("/api/history").then(r=>r.json()).then(h=>{
+    $("#histBackend").textContent = h.backend ? "· "+h.backend : "";
+    const el=$("#trends"), s=(h.series||[]);
+    if(!s.length){ el.innerHTML = h.error
+        ? `<span class="mut">history unavailable (${esc(h.error)})</span>`
+        : '<span class="mut">no campaigns recorded yet — launch one to start the trend</span>';
+      return; }
+    el.innerHTML = trendChart(s) + trendTable(s);
+  }).catch(()=>{});
+}
+
+function trendChart(s){
+  const pts=s.map((d,i)=>({i, v:d.pass_rate})).filter(p=>p.v!=null);
+  if(!pts.length) return '<p class="mut">no judged runs yet</p>';
+  const n=s.length, X=i=> n<=1?50:(i/(n-1))*100, Y=v=> 38-(v*36);
+  const line=pts.map(p=>`${X(p.i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ");
+  const dots=pts.map(p=>`<circle cx="${X(p.i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="1.1" fill="var(--acc)"/>`).join("");
+  return `<svg viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+      aria-label="defended-rate over time"
+      style="width:100%;height:90px;background:var(--bg);border:1px solid var(--line);border-radius:7px">
+    <line x1="0" y1="2" x2="100" y2="2" stroke="var(--line)" stroke-width="0.3"/>
+    <line x1="0" y1="20" x2="100" y2="20" stroke="var(--line)" stroke-width="0.3"/>
+    <line x1="0" y1="38" x2="100" y2="38" stroke="var(--line)" stroke-width="0.3"/>
+    <polyline points="${line}" fill="none" stroke="var(--acc)" stroke-width="0.8"/>${dots}
+  </svg>
+  <div class="mut" style="font-size:11px;display:flex;justify-content:space-between">
+    <span>defended-rate (pass) over ${n} run${n>1?'s':''}</span><span>1.0 top · 0.0 bottom</span></div>`;
+}
+
+function trendTable(s){
+  const rows=s.slice().reverse().slice(0,8).map(d=>`<tr>
+    <td class="mono">${esc(d.run_id)}</td><td class="mut">${esc(d.mode)}</td>
+    <td>${d.pass_rate==null?"n/a":d.pass_rate.toFixed(2)}</td>
+    <td>${d.open_findings}</td>
+    <td class="mut">${esc((d.recorded_at||"").slice(0,16).replace("T"," "))}</td></tr>`).join("");
+  return `<table style="margin-top:8px"><tr><th>run</th><th>mode</th><th>pass</th>`+
+    `<th>find</th><th>when</th></tr>${rows}</table>`;
+}
+
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>(
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
-caps(); updateLiveWarn();
-setInterval(()=>{ if(!poll) fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs)); }, 5000);
+caps(); updateLiveWarn(); renderTrends();
+setInterval(()=>{ if(!poll){ fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs)); renderTrends(); } }, 5000);
 </script>
 </body></html>"""
 

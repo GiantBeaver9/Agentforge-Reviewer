@@ -75,6 +75,12 @@ def test_dashboard_serves_and_runs_dry_campaign():
         assert result is not None and result["status"] == "done", result
         assert result["result"]["summary"]["open_findings"] >= 1
         assert result["result"]["reports"]              # leaky target -> reports
+
+        # the completed campaign records a cross-run history snapshot
+        hist = json.loads(urllib.request.urlopen(base + "/api/history").read())
+        assert hist["backend"] == "sqlite"             # no DATABASE_URL in tests
+        run_id = result["result"]["run_id"]
+        assert any(s["run_id"] == run_id for s in hist["series"]), hist
     finally:
         server.shutdown()
 

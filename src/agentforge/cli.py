@@ -148,6 +148,15 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     reports_path.write_text(json.dumps([r.to_dict() for r in result.reports], indent=2))
 
     summary = store.summary()
+    # Record a cross-run history snapshot (fail-soft — never break a campaign
+    # over a history write). Uses Postgres if DATABASE_URL is set, else SQLite.
+    try:
+        from agentforge.observability.history import HistoryStore
+        hist = HistoryStore(sqlite_path=RUNS_DIR / "history.db")
+        hist.record_snapshot(run_id, summary, mode="dry-run" if args.dry_run else "live")
+        print(f"  history -> {hist.backend} snapshot for {run_id}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  history -> skipped ({type(exc).__name__}: {exc})")
     print(f"\ncampaign {run_id} -> {store.path.name}")
     print(f"  directives={len(result.directives)} attempts={summary['attempts']} "
           f"verdicts={summary['verdicts']} findings={summary['open_findings']} "
