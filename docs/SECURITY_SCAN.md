@@ -34,7 +34,7 @@ which AgentForge declares or imports — see §Dependencies.
 | Critical | 0 | — |
 | High | 0 | — |
 | Medium | 0 | — |
-| Low | 1 | dashboard JS-context escaping (defense-in-depth, not currently reachable) |
+| Low | 1 | dashboard JS-context escaping (defense-in-depth) — **fixed** |
 | Info | 3 | audit-tooling gap, redirect-following, broad excepts (intentional) |
 
 ---
@@ -113,7 +113,14 @@ disabled** and the proxy is never unset — consistent with the sandbox rules.
 
 ## Findings
 
-### LOW-1 — `esc()` doesn't escape `'`, and one sink is a single-quoted JS context
+### LOW-1 — `esc()` doesn't escape `'`, and one sink is a single-quoted JS context — ✅ FIXED (2026-07-22)
+
+> **Resolved.** `esc()` now also escapes `'` → `&#39;`, and `renderRuns` no
+> longer uses an inline `onclick`: run items carry `data-file`/`data-kind`
+> attributes and a single delegated listener on the stable `#runs` parent
+> dispatches to `openDetail`, so a filename can no longer enter a JS-string
+> context at all. Original finding retained below for the record.
+
 
 `src/agentforge/web.py:662` (helper) / `web.py:634` (sink)
 
@@ -152,8 +159,8 @@ when someone gets to it: add `'` → `&#39;` to `esc()`, or use
 
 ## What was fixed vs left
 
-- **Fixed:** nothing security-critical needed fixing. (Mechanical lint cleanups
-  from the quality phase are unrelated to these findings.)
-- **Left for human review:** LOW-1 (escaper hardening) — safe but non-trivial
-  (changes a shared helper's contract), deferred per the routine's
-  conservative rule.
+- **Fixed:** LOW-1 (dashboard JS-context escaping) — hardened after the nightly
+  run at Adam's request; see the finding above. No high/critical findings
+  existed.
+- **Left:** nothing outstanding from this scan. (Mechanical lint cleanups from
+  the quality phase are unrelated to these findings.)

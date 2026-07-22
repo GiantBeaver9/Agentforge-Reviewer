@@ -95,6 +95,16 @@ Four conventional commits, each with the `Assisted-by: Claude Code` trailer:
 - **ruff: clean** on `src/`.
 - No secrets committed; `.env` still untracked + gitignored.
 
+## Follow-up (2026-07-22, after Adam's review)
+
+- **#1 (LOW-1 escaper hardening) — done.** `esc()` now escapes `'`, and the
+  dashboard run list dropped its inline `onclick` for `data-` attributes + a
+  delegated listener. `docs/SECURITY_SCAN.md` updated.
+- **#3 (mypy typing pass) — done.** All 6 type errors fixed with annotations /
+  narrowing (no behavior change); `mypy --ignore-missing-imports src/` is clean.
+- **#2 (critical-severity synthetic example) — still open**, discussing scope
+  with Adam before implementing.
+
 ## Needs Adam's decision
 
 1. **LOW-1 escaper hardening** (`docs/SECURITY_SCAN.md`): harden `esc()` to also
