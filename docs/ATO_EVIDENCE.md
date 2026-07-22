@@ -52,6 +52,7 @@ never persisted to shareable artifacts; see AC/AU below), verdicts, and reports.
 | **AU** Audit | Full run audit trail | Every inter-agent message is appended to an immutable JSONL log keyed by `correlation_id`; a finding is traceable end-to-end. | `observability/store.py`; `dashboard` CLI |
 | **CM** Config Mgmt | Versioned contracts | Inter-agent messages are versioned JSON Schemas; changes are additive-checked. | `contracts/v1/*`, `contracts/README.md` |
 | **IA** Identification & Auth | Target auth handled correctly | Verified OpenEMR session + CSRF handshake; secrets read from `.env` (git-ignored), never logged. | `target/client.py`; `LIVE_RUN_EVIDENCE.md`; `.gitignore` |
+| **AC-3** Access Enforcement | AgentForge's *own* dashboard gate | The web dashboard enforces HTTP Basic auth when `AGENTFORGE_WEB_USER`/`AGENTFORGE_WEB_PASSWORD` are set — credentials compared with constant-time `hmac.compare_digest`, `401`+`WWW-Authenticate` otherwise; the server warns before binding a public interface without it. | `web.py` `_check_auth`/`_auth_credentials`; `tests/test_web.py` |
 | **SI** System Integrity | Independent verification | The Judge (separate model/context) decides success, not the Red Team; a versioned rubric + ground-truth drift check guards judge integrity. | `agents/judge.py`, `evals/ground_truth.json` |
 | **RA** Risk Assessment | Threat modeling | STRIDE/OWASP-mapped threat model precedes testing; findings severity-ranked. | `THREAT_MODEL.md`, `VULNERABILITY_REPORTS.md` |
 | **CA** Assessment & Auth | Continuous assessment + regression | Confirmed exploits become deterministic regression cases re-checked by invariant on every target version. | `regression.py`; `documentation.py` `regression_case` |
@@ -70,7 +71,7 @@ contexts), not by policy alone.
 
 ## 5. Test evidence summary
 
-- **Automated assurance:** 70 passing tests (contracts, agents, drift check,
+- **Automated assurance:** 75 passing tests (contracts, agents, drift check,
   probes, load, web) — `pytest tests/ -q`.
 - **Live verification:** auth handshake + full four-agent loop run against the
   deployed target; the co-pilot defended all seeded LLM attacks
@@ -79,7 +80,80 @@ contexts), not by policy alone.
   (`VULNERABILITY_REPORTS.md`).
 - **Performance baseline:** `LOAD_TEST.md`.
 
-## 6. Residual risk
+## 6. Software bill of materials (SBOM)
+
+Direct dependencies as declared in `requirements.txt`, with the versions
+resolved in the assessment environment (2026-07-22). The deployed dashboard runs
+the smaller `requirements-deploy.txt` subset (marked ✓); the remaining packages
+are dev/optional (LLM SDKs, LangGraph, CLI/formatting) and are lazily imported or
+test-only, so they are not in the deployed runtime.
+
+| Package | Constraint | Resolved | In deploy runtime | Purpose |
+|---|---|---|---|---|
+| langgraph | >=0.2.0 | 1.2.9 | — (lazy) | Optional graph orchestration drop-in |
+| langchain-core | >=0.3.0 | 1.5.0 | — | Transitive of langgraph |
+| pydantic | >=2.7 | 2.13.4 | ✓ | Typed contracts |
+| jsonschema | >=4.22 | 4.26.0 | ✓ | Wire-contract validation |
+| httpx | >=0.27 | 0.28.1 | ✓ | HTTP client to target + LLM adapters |
+| tenacity | >=8.3 | 9.1.4 | — | Retry/backoff |
+| openai | >=1.30 | 2.46.0 | — (opt-in) | OpenAI-compatible LLM client |
+| google-generativeai | >=0.7 | 0.8.6 | — (opt-in) | Optional Gemini judge |
+| python-dotenv | >=1.0 | 1.2.2 | ✓ | `.env` loading |
+| rich | >=13.7 | 15.0.0 | — | CLI formatting |
+| typer | >=0.12 | 0.27.0 | — | CLI |
+| pytest | >=8.2 | 9.1.1 | — (test) | Test runner |
+
+The web server, probes, and load test are Python-stdlib only — no third-party
+runtime is required to serve the dashboard beyond the four ✓ packages.
+
+## 7. Dependency & platform vulnerability scan
+
+Scanned with `pip-audit` (OSV/PyPI advisory DB) on 2026-07-22:
+
+| Target | Result |
+|---|---|
+| `requirements.txt` | **No known vulnerabilities** |
+| `requirements-deploy.txt` | **No known vulnerabilities** |
+
+AgentForge's declared dependency closure is clean. A full-environment audit
+additionally flagged `setuptools`, `wheel`, `urllib3`, and `pyjwt` — these are
+**sandbox base-image** packages that AgentForge neither declares nor imports, so
+they are outside the authorization boundary and tracked as an environment-hygiene
+note, not an AgentForge finding. `pip-audit` is not preinstalled in the base
+image; adding it to a dev-requirements file would let the nightly scan run
+without a network install (POA&M #4). Full method and output:
+`docs/SECURITY_SCAN.md`.
+
+## 8. Incident response & postmortem
+
+The one incident class AgentForge must handle is **PHI transiting a target leak
+response** — i.e. the co-pilot under test discloses real patient data in a reply
+that AgentForge captures. The runbook:
+
+1. **Detect.** The Judge flags a `success` verdict on a `data_exfiltration` /
+   `identity_role_exploitation` category with a leak marker in the last target
+   turn (`judge.py` `_score`). Any such finding is **critical** and is gated at
+   `PENDING_HUMAN` — it is never auto-published (`documentation.py`).
+2. **Contain.** Target responses are held only in the local append-only run log
+   keyed by `correlation_id`; they are **not** copied into shareable artifacts,
+   and report prose is PHI-scrubbed by the rationale rule. Stop the campaign
+   (hard caps/halt already bound blast radius) and treat the run log as
+   sensitive: restrict to the operator host, do not commit it (`runs/` is a
+   local working dir), and rotate/delete after triage.
+3. **Eradicate & recover.** The finding is the *target's* defect, not
+   AgentForge's — hand the reproduction (deterministic regression case) to the
+   co-pilot owner; AgentForge performs **no** remediation on the target
+   (reports-only, no autonomous action).
+4. **Review (postmortem).** Confirmed leaks become deterministic regression
+   cases (`documentation.py` `regression_case`) re-checked by invariant on every
+   future target version, so a fixed leak cannot silently regress. Human
+   spot-review of a sample of verdicts each cycle catches Judge drift.
+
+Trigger for a *tester-side* incident (e.g. a run log with PHI committed by
+mistake): purge from history, rotate any exposed credentials, and record the
+event here. None has occurred in this assessment.
+
+## 9. Residual risk
 
 | Risk | Likelihood | Impact | Disposition |
 |---|---|---|---|
@@ -88,15 +162,16 @@ contexts), not by policy alone.
 | A live run transits PHI in a target leak response | Low | High | Responses are not persisted to shareable artifacts; reports are PHI-scrubbed by policy (see `judge.py` rationale rule). |
 | LLM cost overrun | Low | Low | Hard caps enforced in code (Orchestrator + GUI clamps). |
 
-## 7. POA&M (open items)
+## 10. POA&M (open items)
 
 | # | Item | Priority | Owner |
 |---|---|---|---|
 | 1 | Wire a live independent Judge model (adapter built; needs egress+key) | Med | Eng |
 | 2 | Automate the human-review sample for `uncertain` verdicts | Low | AppSec |
 | 3 | Persist observability to a queryable DB for multi-run trend (JSONL today) | Low | Eng |
+| 4 | Add `pip-audit` to dev-requirements so the dependency scan runs offline | Low | AppSec |
 
-## 8. Recommendation
+## 11. Recommendation
 
 AgentForge implements its in-boundary controls with test and live evidence, has a
 defined and least-privilege interface to the out-of-boundary target, and carries
