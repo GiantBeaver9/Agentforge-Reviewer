@@ -104,41 +104,59 @@ campaigns); at high volume, **BYOK removes the platform fee** (fee-free to
 $25K/mo of list-price inference), so the platform fee never becomes a scaling
 term — you converge on the underlying providers' raw token cost.
 
-**Per-model token prices are not hardcoded here on purpose.** On OpenRouter the
-price *is* the routed provider's list price, and it moves — so the source of
-truth is [`openrouter.ai/models`](https://openrouter.ai/models) (filter by model,
-read in/out $/MTok), not a table that rots. Only the pinned rows below are stable
-enough to keep in-repo:
+**Per-model token prices** ($/1M tokens, list price via OpenRouter, mid-2026 —
+these move, so verify at [`openrouter.ai/models`](https://openrouter.ai/models)).
+The last column is the cost of **one Judge call** (~1,200 in / 250 out tokens):
 
-| Model (typical role) | In $/MTok | Out $/MTok |
+| Model (role) | In $/MTok | Out $/MTok | $ / Judge call |
+|---|---:|---:|---:|
+| `llama-3.1-8b-instruct` (Red Team) | 0.02 | 0.03 | — |
+| `qwen2.5-72b-instruct` (open Judge) | 0.04 | 0.10 | $0.00007 |
+| `gemini-2.5-flash-lite` (Judge) | 0.10 | 0.40 | $0.00022 |
+| `gpt-4o-mini` (Judge) | 0.15 | 0.60 | $0.00033 |
+| `gemini-2.5-flash` (Judge) | 0.30 | 2.50 | $0.00099 |
+| `claude-sonnet-5` (Judge, frontier) | 3.00 (intro 2.00) | 15.00 (intro 10.00) | $0.0074 |
+| `claude-opus-4-8` (Judge, top) | 5.00 | 25.00 | $0.012 |
+
+The **Red Team model is effectively free even hosted**: `llama-3.1-8b` at
+$0.02/$0.03 is ~$0.00007 per attempt (4 variants), so 100K attempts ≈ **$7** on
+OpenRouter — or **$0** run locally. `:free` rate-limited variants exist for
+testing. Note the **~100× span across viable Judge models** ($0.00007 →
+$0.0074/call) — that's the lever the next section quantifies.
+
+## Effective spend at scale
+
+**Plain terms first.** A single capped live campaign (the dashboard limits a live
+run to ≤3 rounds × ≤6 attempts ≈ 18 attempts) costs **single-digit cents** — on
+the order of **≲10¢ of Red Team and ≲2–3¢ of Judge** with a mid-tier model (up to
+~13¢ Judge if *every* attempt escalates to a frontier model; ~$0 on an open one).
+At that scale the *target's* own per-attempt LLM spend is the larger number. The
+projection below is for the 100K+ regime a continuously-running deployment
+reaches — where two levers keep it cheap.
+
+**Lever 1 — the deterministic gate.** The headline table prices an LLM Judge on
+**every** attempt (an upper bound). The shipped Judge only escalates the
+**uncertain fraction `u`** to the LLM (`agents/judge.py` refines `uncertain`/
+`partial` only), so frontier Judge spend scales with `attempts × u`, not
+`attempts`.
+
+**Lever 2 — the Judge model** (~100× per-call span, table above). Combined, at
+**100K attempts with `u = 20%`** (i.e. 20K LLM Judge calls):
+
+| Judge model | $ / call | 100K attempts @ u=20% |
 |---|---:|---:|
-| `claude-sonnet-5` (Judge) | 3.00 (intro 2.00) | 15.00 (intro 10.00) |
-| `claude-opus-4-8` (Judge, top) | 5.00 | 25.00 |
-| `claude-haiku-4-5` (Judge, budget) | 1.00 | 5.00 |
-| open Red Team (`llama-3.1-8b` class) | cents/MTok — often < $0.10 in / < $0.20 out; `:free` rate-limited variants exist | — |
-| open Judge (`qwen2.5-72b` / `llama-3.3-70b` class) | check `openrouter.ai/models` | — |
-| `gpt-4o-mini` / `gemini-*-flash` (Judge) | check the provider / `openrouter.ai/models` | — |
+| `qwen2.5-72b` (open) | $0.00007 | **~$1.50** |
+| `gemini-2.5-flash-lite` | $0.00022 | ~$4.40 |
+| `gpt-4o-mini` | $0.00033 | ~$6.60 |
+| `claude-sonnet-5` (frontier) | $0.0074 | ~$147 |
 
-## Effective spend at scale — the deterministic gate
-
-The headline table prices an LLM Judge on **every** attempt (an upper bound). The
-shipped Judge doesn't work that way: the **free deterministic rubric decides the
-clear cases, and only the uncertain fraction `u` is escalated to the LLM**
-(`agents/judge.py` refines `uncertain`/`partial` only). So real frontier Judge
-spend scales with `attempts × u`, not `attempts`:
-
-`effective judge $ ≈ attempts × u × ($/judge-call)`
-
-| Attempts | u = 40% | u = 20% | u = 10% |
-|---:|---:|---:|---:|
-| 10,000 | $7.84 | $3.92 | $1.96 |
-| 100,000 | $78.40 | $39.20 | $19.60 |
-
-(at the $0.00196/call small-frontier unit; for `claude-sonnet-5` multiply ≈3.8× —
-100K @ `u=20%` ≈ **$150**.) The lever compounds: Documentation runs only on
-confirmed exploits, and the probe + regression paths never call an LLM at all.
-**The system is deliberately built so the frontier model is the smallest line
-item, not the largest — that is what keeps it viable at 100K+ attempts.**
+So the Judge bill at 100K attempts runs **~$1.50 to ~$150** purely on model
+choice; Red Team adds ≈$7 hosted / $0 local; Documentation fires only on
+confirmed exploits; probes and regression never call an LLM. **The frontier model
+is the smallest controllable line item, and the two levers keep it that way at
+100K+.** Choose on the accuracy/cost trade-off from `check_ground_truth()`, not
+list price alone — a $1.50 open judge that mislabels the ground truth costs more
+than a $147 one that doesn't.
 
 ## Cost controls actually enforced in code
 
