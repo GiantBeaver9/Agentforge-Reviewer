@@ -127,8 +127,12 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
 
         run_id = f"camp-{uuid4().hex[:8]}"
         store = ObservabilityStore(RUNS_DIR / f"{run_id}.observability.jsonl")
+        # Dry-run is for generating test data offline, so let every requested
+        # round run (don't stop early on no-new-findings); live keeps the halt.
+        empty_windows = (rounds + 1) if dry_run else 3
         orch = OrchestratorAgent(store, CampaignState(
-            max_attempts=max_attempts * rounds, max_usd=max_usd))
+            max_attempts=max_attempts * rounds, max_usd=max_usd,
+            halt_after_empty_windows=empty_windows))
         result = run_campaign(
             target=target, seeds=seeds, store=store, orchestrator=orch,
             judge=judge, redteam_llm=redteam_llm,
@@ -182,6 +186,32 @@ def _run_probe_job(job_id: str, params: dict) -> None:
         _log(job_id, traceback.format_exc().splitlines()[-1])
 
 
+def _run_loadtest_job(job_id: str, params: dict) -> None:
+    from agentforge import config as cfgmod
+    from agentforge.loadtest import sweep
+    try:
+        cfg = cfgmod.load()
+        if not cfg.target.base_url:
+            _set(job_id, status="error",
+                 error="AGENTFORGE_TARGET_BASE_URL is not set — set it to the "
+                       "target's URL (e.g. https://your-openemr.up.railway.app)")
+            return
+        # Bounded from the UI: hits the cheap unauth health endpoint (no LLM
+        # budget), but keep the burst modest against a live target.
+        n = min(200, max(10, int(params.get("n", 50))))
+        _set(job_id, status="running")
+        _log(job_id, f"baseline load test: {n} req/level vs {cfg.target.base_url} (health.php)")
+        summaries = [s.summary() for s in sweep(cfg.target.base_url, n=n)]
+        out = RUNS_DIR / f"loadtest-{uuid4().hex[:8]}.json"
+        RUNS_DIR.mkdir(exist_ok=True)
+        out.write_text(json.dumps(summaries, indent=2))
+        _log(job_id, f"done: {len(summaries)} concurrency levels, {n} req each")
+        _set(job_id, status="done", result={"file": out.name, "levels": summaries})
+    except Exception as exc:  # noqa: BLE001
+        _set(job_id, status="error", error=f"{type(exc).__name__}: {exc}")
+        _log(job_id, traceback.format_exc().splitlines()[-1])
+
+
 def _start_job(kind: str, runner, params: dict) -> str:
     job_id = f"job-{uuid4().hex[:8]}"
     with _JOBS_LOCK:
@@ -206,7 +236,8 @@ def _list_runs() -> dict:
             summary = {"attempts": 0, "verdicts": 0, "open_findings": 0, "coverage": []}
         campaigns.append({"file": p.name, "summary": summary})
     probes = [Path(f).name for f in sorted(glob.glob(str(RUNS_DIR / "probes-*.json")), reverse=True)]
-    return {"campaigns": campaigns, "probes": probes}
+    loadtests = [Path(f).name for f in sorted(glob.glob(str(RUNS_DIR / "loadtest-*.json")), reverse=True)]
+    return {"campaigns": campaigns, "probes": probes, "loadtests": loadtests}
 
 
 def _read_json_file(name: str):
@@ -357,6 +388,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"job_id": _start_job("campaign", _run_campaign_job, body)})
             if path == "/api/probe":
                 return self._json({"job_id": _start_job("probe", _run_probe_job, body)})
+            if path == "/api/loadtest":
+                return self._json({"job_id": _start_job("loadtest", _run_loadtest_job, body)})
             return self._json({"error": "not found"}, 404)
         except Exception as exc:  # noqa: BLE001
             self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
@@ -429,8 +462,8 @@ _INDEX_HTML = r"""<!doctype html>
       <label class="help" title="Which attack category to focus on. 'all' lets the Orchestrator pick the highest-priority category×surface cell each round.">Category ⓘ</label>
       <select id="category" title="Which attack category to focus on. 'all' lets the Orchestrator pick the highest-priority category×surface cell each round."><option value="">all categories</option></select>
       <div class="row">
-        <div><label class="help" title="Orchestrator rounds. Each round the Orchestrator picks the highest-priority attack cell (category × surface) and dispatches the Red Team at it. More rounds = broader coverage across categories. The run also stops early if a round finds nothing new (no_findings_in_window) or the budget cap is hit.">Rounds ⓘ</label><input id="rounds" type="number" value="2" min="1" title="Orchestrator rounds. Each round targets the highest-priority attack cell; more rounds = broader coverage. Stops early on no-new-findings or budget."></div>
-        <div><label class="help" title="Attempts the Red Team runs per round = one seed attack plus its mutations, each a full multi-turn exchange with the target. Higher = deeper probing of one cell, but more of the target's LLM budget spent per round.">Attempts/round ⓘ</label><input id="attempts" type="number" value="4" min="1" title="Per round: 1 seed attack + its mutations, each a full multi-turn exchange. Higher = deeper probing of one cell, more target LLM budget spent."></div>
+        <div><label class="help" title="Orchestrator rounds. Each round the Orchestrator picks the highest-priority attack cell (category × surface) and dispatches the Red Team at it. More rounds = broader coverage across categories. The run also stops early if a round finds nothing new (no_findings_in_window) or the budget cap is hit. LIVE runs are capped at ≤3 rounds; DRY-RUN is unbounded (up to 100 here) since it spends no target budget.">Rounds ⓘ</label><input id="rounds" type="number" value="2" min="1" max="100" title="Orchestrator rounds — more = broader coverage. Live cap ≤3; dry-run up to 100."></div>
+        <div><label class="help" title="Attempts the Red Team runs per round = one seed attack plus its mutations, each a full multi-turn exchange with the target. Higher = deeper probing of one cell, but more of the target's LLM budget spent per round. LIVE runs are capped at ≤6 attempts/round; DRY-RUN is unbounded (up to 100 here). The actual count is also bounded by the seeds available in the cell (seed + 4 mutations each).">Attempts/round ⓘ</label><input id="attempts" type="number" value="4" min="1" max="100" title="Per round: seed + mutations, each a full multi-turn exchange. Live cap ≤6; dry-run up to 100 (also bounded by available seeds)."></div>
         <div><label class="help" title="The patient ID the co-pilot session is pinned to. The target scopes its answers to this one patient; attacks try to make it leak or act outside that scope. Must be a patient that exists on the target with a seeded synthesis doc (pid 1 on the dev deploy). It's also the pid whose page the CSRF token is scraped from.">Pinned pid ⓘ</label><input id="pid" type="number" value="1" min="1" title="Patient ID the session is pinned to. Attacks try to break out of this patient's scope. Must exist on the target with a seeded doc (pid 1 on dev); also the pid the CSRF token is scraped from."></div>
       </div>
       <p id="liveWarn" class="warn" style="display:none;font-size:12px;margin:8px 0 0"></p>
@@ -441,6 +474,17 @@ _INDEX_HTML = r"""<!doctype html>
       <p class="mut" style="margin:0 0 4px;font-size:12px">
         Cheap HTTP checks of the unauthenticated surface (health/ready/auth). Runs live.</p>
       <button class="ghost" id="runProbe">▶ Run probe sweep</button>
+    </div>
+    <div class="card">
+      <h2>Baseline load test</h2>
+      <p class="mut" style="margin:0 0 4px;font-size:12px">
+        Latency/throughput baseline over a concurrency sweep against the cheap
+        unauth <code>health.php</code> (no LLM budget spent). Identifies the
+        throughput knee.</p>
+      <label class="help" title="Requests fired at each concurrency level (1, 5, 10, 20). Bounded 10–200 from the UI to stay gentle on a live target.">Requests / level ⓘ</label>
+      <input id="loadN" type="number" value="50" min="10" max="200"
+        title="Requests per concurrency level (1/5/10/20). 10–200.">
+      <button class="ghost" id="runLoad">▶ Run baseline load test</button>
     </div>
   </div>
 
@@ -468,7 +512,7 @@ let poll = null;
 function caps(){ fetch("/api/state").then(r=>r.json()).then(st=>{
   const sel=$("#category"); (st.categories||[]).forEach(c=>{
     const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
-  window._caps = st.live_caps; renderRuns(st.runs); renderLlm(st.llm);
+  window._caps = st.live_caps; renderRuns(st.runs); renderLlm(st.llm); updateLiveWarn();
 }); }
 
 function renderLlm(llm){
@@ -480,12 +524,23 @@ function renderLlm(llm){
 
 function updateLiveWarn(){
   const dry=$("#dry").checked; $("#mockRow").style.display = dry?"block":"none";
-  const w=$("#liveWarn");
-  if(dry){ w.style.display="none"; return; }
-  const c=window._caps||{max_attempts:6,max_rounds:3,max_usd:2};
+  const w=$("#liveWarn"), c=window._caps||{max_attempts:6,max_rounds:3,max_usd:2};
+  const rounds=$("#rounds"), att=$("#attempts");
   w.style.display="block";
-  w.textContent=`Live run spends the target's LLM budget. Capped to ≤${c.max_rounds} rounds, `
-    +`≤${c.max_attempts} attempts/round, ≤$${c.max_usd}.`;
+  if(dry){
+    rounds.max=100; att.max=100;              // dry-run is unbounded (offline mock)
+    w.style.color="var(--mut)";
+    w.textContent="Dry-run (offline mock): unbounded — set rounds / attempts up to "
+      +"100 to generate more test items. Spends no target budget.";
+  }else{
+    rounds.max=c.max_rounds; att.max=c.max_attempts;   // live is clamped
+    if(+rounds.value>c.max_rounds) rounds.value=c.max_rounds;
+    if(+att.value>c.max_attempts) att.value=c.max_attempts;
+    w.style.color="";
+    w.textContent=`Live run spends the target's LLM budget. Capped to ≤${c.max_rounds} `
+      +`rounds, ≤${c.max_attempts} attempts/round, ≤$${c.max_usd} — higher values are `
+      +`clamped down.`;
+  }
 }
 $("#dry").addEventListener("change", updateLiveWarn);
 
@@ -505,6 +560,8 @@ $("#runCamp").addEventListener("click", ()=> launch("/api/campaign",{
 
 $("#runProbe").addEventListener("click", ()=> launch("/api/probe",{}, $("#runProbe")));
 
+$("#runLoad").addEventListener("click", ()=> launch("/api/loadtest",{n:+$("#loadN").value}, $("#runLoad")));
+
 function watch(jobId){
   $("#jobCard").style.display="block";
   if(poll) clearInterval(poll);
@@ -514,7 +571,7 @@ function watch(jobId){
     $("#jobLog").textContent=(job.log||[]).join("\n");
     if(st==="done"||st==="error"){
       clearInterval(poll); poll=null;
-      $("#runCamp").disabled=false; $("#runProbe").disabled=false;
+      ["#runCamp","#runProbe","#runLoad"].forEach(s=>$(s).disabled=false);
       renderJobResult(job); fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs));
     }
   }), 1200);
@@ -526,6 +583,9 @@ function renderJobResult(job){
   const r=job.result||{};
   if(job.kind==="probe"){
     el.innerHTML = probeTable(r.results||[]); return;
+  }
+  if(job.kind==="loadtest"){
+    el.innerHTML = loadTable(r.levels||[]); return;
   }
   let h="";
   if(r.summary){ h+=coverageTable(r.summary); }
@@ -558,6 +618,16 @@ function probeTable(results){
       <td>${esc(r.title)}</td><td class="mut">${esc(r.observed)}</td></tr>`).join("")+"</table>";
 }
 
+function loadTable(levels){
+  if(!levels.length) return '<p class="mut">no data</p>';
+  return "<table><tr><th>conc</th><th>req</th><th>rps</th><th>p50</th><th>p95</th>"+
+    "<th>p99</th><th>errs</th></tr>"+
+    levels.map(l=>{const m=l.latency_ms||{};return `<tr>
+      <td>${l.concurrency}</td><td>${l.requests}</td><td>${l.throughput_rps}</td>
+      <td>${m.p50} ms</td><td>${m.p95} ms</td><td>${m.p99} ms</td>
+      <td class="${l.errors?'sev-high':'mut'}">${l.errors}</td></tr>`;}).join("")+"</table>";
+}
+
 function renderRuns(runs){
   const el=$("#runs"); if(!runs){el.textContent="none yet";return;}
   let h="";
@@ -568,6 +638,9 @@ function renderRuns(runs){
   (runs.probes||[]).forEach(f=>{
     h+=`<div class="runitem" onclick="openDetail('${f}','probe')">
       <span class="mono">${esc(f)}</span><span class="mut">probes</span></div>`; });
+  (runs.loadtests||[]).forEach(f=>{
+    h+=`<div class="runitem" onclick="openDetail('${f}','loadtest')">
+      <span class="mono">${esc(f)}</span><span class="mut">load test</span></div>`; });
   el.innerHTML = h || '<span class="mut">no runs yet — launch one above</span>';
 }
 
@@ -575,6 +648,7 @@ function openDetail(file, kind){
   fetch("/api/file/"+encodeURIComponent(file)).then(r=>r.json()).then(d=>{
     $("#detailCard").style.display="block"; $("#detailTitle").textContent=file;
     if(kind==="probe"){ $("#detail").innerHTML=probeTable(d.results||d||[]); return; }
+    if(kind==="loadtest"){ $("#detail").innerHTML=loadTable(Array.isArray(d)?d:(d.levels||[])); return; }
     let h=d.summary?coverageTable(d.summary):"";
     const f=d.open_findings||[];
     h+= f.length ? "<h3>Open findings</h3>"+f.map(v=>`<div class="finding">

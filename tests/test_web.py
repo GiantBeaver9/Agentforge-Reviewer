@@ -139,3 +139,22 @@ def test_base_url_normalization_and_guard(monkeypatch):
     # explicit http:// is preserved
     monkeypatch.setenv("AGENTFORGE_TARGET_BASE_URL", "http://localhost:8300")
     assert cfgmod.load().target.base_url == "http://localhost:8300"
+
+
+def test_loadtest_job_runs(monkeypatch):
+    # Job runner writes a levels result without hitting the network (sweep faked).
+    from agentforge import loadtest as lt
+
+    class _S:
+        def summary(self):
+            return {"concurrency": 1, "requests": 10, "throughput_rps": 5.0,
+                    "errors": 0, "latency_ms": {"p50": 10, "p95": 20, "p99": 30}}
+
+    monkeypatch.setattr(lt, "sweep", lambda base_url, n=100: [_S(), _S()])
+    jid = "job-loadtest-unit"
+    web._JOBS[jid] = {"id": jid, "kind": "loadtest", "status": "queued",
+                      "log": [], "result": None, "error": None, "params": {}}
+    web._run_loadtest_job(jid, {"n": 10})
+    job = web._JOBS[jid]
+    assert job["status"] == "done", job
+    assert len(job["result"]["levels"]) == 2

@@ -47,11 +47,14 @@ PYTHONPATH=src python -m agentforge.web        # then open http://127.0.0.1:8800
 # or: PYTHONPATH=src python -m agentforge.cli web --port 8800
 ```
 
-From the dashboard you can launch a campaign (offline **dry-run** by default, or
-live against the target with enforced attempt/round/budget caps), run the
-deterministic **probe** sweep, watch coverage/pass-rate/findings update live, and
-click into any past run's detail. It's the same agents and observability store as
-the CLI, just with buttons — and it doubles as the demo view.
+From the dashboard you can launch a campaign (offline **dry-run** by default —
+unbounded, up to 100 rounds/attempts to generate test data — or live against the
+target with enforced attempt/round/budget caps), run the deterministic **probe**
+sweep, run the **baseline load test** (latency/throughput over a concurrency
+sweep), watch coverage/pass-rate/findings update live, and click into any past
+run's detail. Hover the form fields (ⓘ) for what each control does and its caps.
+It's the same agents and observability store as the CLI, just with buttons — and
+it doubles as the demo view.
 
 ## Quick start (CLI)
 
