@@ -63,6 +63,48 @@ runs are resumable and auditable.
 
 ---
 
+## Why deterministic-first (the load-bearing design decision)
+
+The central design choice in AgentForge is **not** "use AI." It is: **use the
+cheapest tool that solves each sub-problem correctly, and reserve the LLM for the
+one job nothing else can do.** For a security evaluator that job is narrow —
+generating *novel* attacks and making *natural-language judgements* about whether
+a response broke a clinical invariant. Everything else has a specification, and
+anything with a specification is cheaper, more reliable, and more auditable as
+deterministic code.
+
+**The counter-intuitive part: LLMs make the deterministic path *more* attractive,
+not less.** It is tempting to route everything through a model now that models are
+capable — but "can" is not "should." A deterministic check is:
+
+- **Cheaper** — $0 per run vs. a metered API call. At scale the difference is the
+  whole bill (see `docs/COST_ANALYSIS.md`: the deterministic surface is $0; the
+  LLM crawl is the only cost term, ~$1.50–$150 at 100K attempts by model choice).
+- **Reproducible** — the same input gives the same output every time; an LLM's
+  does not, which is fatal for a *regression* test whose entire purpose is a
+  stable pass/fail.
+- **Auditable** — a rule you can read and a reviewer can trust, vs. a probabilistic
+  black box you must re-verify.
+- **Drift-free** — it does not change behaviour when a model is updated underneath
+  you.
+
+So the rule is a decision, applied per sub-problem:
+
+| Question about a sub-problem | Tool | Where it lives in AgentForge |
+|---|---|---|
+| Is the correct answer **specifiable** (a rule, a schema, arithmetic, a replay)? | **Deterministic** ($0) | probe harness, regression replay, budget/coverage math, schema validation, load test |
+| Does it require **generating something novel** or a **judgement in natural language**? | **LLM** (metered) | Red Team attack generation, Judge verdict on subtle leaks, Documentation prose |
+| Is it a **verdict that must be trusted**? | **Deterministic gate first, LLM only on the residue** | Judge: rubric decides clear cases free; LLM escalated only on `uncertain` |
+
+This is why the platform can attack across five categories, probe the whole
+unauthenticated surface, and run a regression suite for **pennies per campaign** —
+the expensive tool is only ever pointed at the part of the problem that actually
+needs it. Reaching for an LLM where a rule would do is not "more AI," it is a more
+expensive, less reliable, harder-to-audit version of the same answer. The hybrid
+is the engineering result, not a compromise.
+
+---
+
 ## Agent interaction diagram
 
 ```mermaid
