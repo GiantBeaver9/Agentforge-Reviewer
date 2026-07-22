@@ -13,7 +13,6 @@ findings, so both feed one report. Probes assert invariants from THREAT_MODEL.md
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass, field
 from typing import Any
 

@@ -30,7 +30,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agentforge import config as cfgmod                                  # noqa: E402
 from agentforge.agents.judge import JudgeAgent                           # noqa: E402
-from agentforge.agents.documentation import DocumentationAgent          # noqa: E402
 from agentforge.agents.llm import build_judge_llm, build_redteam_llm    # noqa: E402
 from agentforge.agents.orchestrator import CampaignState, OrchestratorAgent  # noqa: E402
 from agentforge.agents.redteam import RedTeamAgent, SeedCase             # noqa: E402
@@ -161,9 +160,8 @@ def cmd_campaign(args: argparse.Namespace) -> int:
 
 
 def cmd_judge(args: argparse.Namespace) -> int:
-    attempts = [json.loads(l) for l in Path(args.attempts).read_text().splitlines() if l.strip()]
+    attempts = [json.loads(line) for line in Path(args.attempts).read_text().splitlines() if line.strip()]
     judge = _build_judge(args, cfgmod.load())
-    doc = DocumentationAgent()
     out = Path(args.attempts).with_suffix(".verdicts.jsonl")
     findings = 0
     with out.open("w") as fh:
