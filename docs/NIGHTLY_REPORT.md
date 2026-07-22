@@ -102,8 +102,11 @@ Four conventional commits, each with the `Assisted-by: Claude Code` trailer:
   delegated listener. `docs/SECURITY_SCAN.md` updated.
 - **#3 (mypy typing pass) — done.** All 6 type errors fixed with annotations /
   narrowing (no behavior change); `mypy --ignore-missing-imports src/` is clean.
-- **#2 (critical-severity synthetic example) — still open**, discussing scope
-  with Adam before implementing.
+- **#2 (critical-severity synthetic example) — resolved document-only** (Adam's
+  call): no synthetic finding manufactured. `VULNERABILITY_REPORTS.md` now
+  records that the `PENDING_HUMAN` gate is proven by an automated test and that
+  no real critical was found because the target defended — keeping the findings
+  doc real-only.
 
 ## Needs Adam's decision
 

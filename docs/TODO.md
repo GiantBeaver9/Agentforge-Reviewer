@@ -27,12 +27,12 @@ kept visible on purpose rather than smoothed over.
 - [x] **Require `evidence`.** `evidence` is now in `_REQUIRED_REPORT_FIELDS`; the
   deterministic Judge always emits >=1 evidence item on a success verdict, so an
   evidence-less report is rejected by the data-quality gate. Test added.
-- [ ] **Critical-severity example.** All 3 published findings are Low/Med probe
-  findings, so the `PENDING_HUMAN` critical-approval gate is never exercised by a
-  real example. Add a synthetic critical finding to demonstrate the gate.
-  *(Left for human review — the existing `data_exfiltration` success test already
-  exercises the `PENDING_HUMAN` path; a published synthetic finding is a
-  judgement call.)*
+- [x] **Critical-severity example.** Resolved as *document-only* (Adam's call):
+  no synthetic critical finding is manufactured. The `PENDING_HUMAN` gate is
+  proven by `test_report_has_required_fields_and_human_gate`, and
+  `VULNERABILITY_REPORTS.md` now states this explicitly alongside the honest
+  negative (target defended the critical-class attacks). Keeps the findings doc
+  real-only.
 - [x] **Determinism test.** Added `test_summary_is_deterministic` — builds a
   store, runs `summary()` twice, asserts equal (and byte-identical JSON).
 
