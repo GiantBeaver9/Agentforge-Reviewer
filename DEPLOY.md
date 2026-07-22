@@ -90,11 +90,19 @@ REDTEAM_BASE_URL=https://openrouter.ai/api/v1
 REDTEAM_MODEL=meta-llama/llama-3.1-8b-instruct
 REDTEAM_API_KEY=sk-or-...
 
-# Ollama / vLLM (self-hosted; must be reachable from the service)
-REDTEAM_BASE_URL=http://<your-ollama-host>:11434/v1
-REDTEAM_MODEL=llama3.1:8b
-REDTEAM_API_KEY=ollama
+# Local runtime (LM Studio / Ollama / vLLM) — free, no refusals, private.
+# Best for the Red Team; must be reachable from the service (localhost only if
+# you run AgentForge locally, else point at the host's IP / a tunnel).
+REDTEAM_BASE_URL=http://localhost:1234/v1          # LM Studio default (Ollama: :11434/v1)
+REDTEAM_MODEL=<the model you loaded>
+REDTEAM_API_KEY=lm-studio                          # any non-empty string
 ```
+
+> **Recommended when you have the hardware:** run the Red Team on a local
+> open model via **LM Studio** or Ollama. It's free, never refuses offensive-
+> security prompts, and keeps attack generation off any third-party API. For a
+> *deployed* Railway service the local runtime must be reachable (host IP or a
+> tunnel); for local dev it's just `localhost`.
 
 The deployed service needs outbound egress to whatever endpoint you set; if the
 LLM call fails, the agent falls back to its deterministic core (a run never

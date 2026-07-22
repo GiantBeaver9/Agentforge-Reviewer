@@ -94,7 +94,7 @@ overhead on top:
 | **Direct** (Anthropic / OpenAI / Google) | provider list | none | a single committed model |
 | **OpenRouter** | pass-through — **no per-token markup**; equals the routed provider's list price | **5.5%** fee on pay-as-you-go credit top-ups; some `:free` rate-limited variants. **BYOK:** fee-free up to $25K/mo of list-price inference, then 5% | routing to **multiple** families through one key + one balance |
 | **HF Inference Providers** | pay-per-token, routed to a backend | dedicated Inference Endpoints (paid) for a specific uncensored model not on serverless | the **open/uncensored Red Team** catalog |
-| **Local** (Ollama / vLLM) | ~$0 marginal | your own GPU / host | high-volume Red Team at zero token cost |
+| **Local** (LM Studio / Ollama / vLLM) | ~$0 marginal (electricity) | your own GPU / host | zero-token-cost, no-refusal, private Red Team — the recommended default when you have the hardware |
 
 Because OpenRouter is pass-through, it's the pragmatic pick for this system: one
 account routes the frontier **Judge** and the open **Red Team** simultaneously,
