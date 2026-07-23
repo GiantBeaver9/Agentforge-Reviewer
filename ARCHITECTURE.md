@@ -270,7 +270,7 @@ multi-turn, coverage-driven, clinically-judged parts they don't cover.
 | Judge LLM (frontier) | API key | queue + exponential backoff on `rate_limited` |
 
 _Status: all four agents and the deterministic substrate are now implemented and
-tested (70 passing tests). Built: the versioned Contracts; the Red Team agent
+tested (133 passing tests). Built: the versioned Contracts; the Red Team agent
 (verified live against the deployed target); the Judge (deterministic rubric
 `1.0.0` + ground-truth drift check); the Documentation agent (report + regression
 case + human gate on critical); the Orchestrator (coverage/severity scoring +
