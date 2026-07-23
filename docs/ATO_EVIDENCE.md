@@ -52,7 +52,7 @@ never persisted to shareable artifacts; see AC/AU below), verdicts, and reports.
 | **AU** Audit | Full run audit trail | Every inter-agent message is appended to an immutable JSONL log keyed by `correlation_id`; a finding is traceable end-to-end. | `observability/store.py`; `dashboard` CLI |
 | **CM** Config Mgmt | Versioned contracts | Inter-agent messages are versioned JSON Schemas; changes are additive-checked. | `contracts/v1/*`, `contracts/README.md` |
 | **IA** Identification & Auth | Target auth handled correctly | Verified OpenEMR session + CSRF handshake; secrets read from `.env` (git-ignored), never logged. | `target/client.py`; `LIVE_RUN_EVIDENCE.md`; `.gitignore` |
-| **AC-3** Access Enforcement | AgentForge's *own* dashboard gate | The web dashboard enforces HTTP Basic auth when `AGENTFORGE_WEB_USER`/`AGENTFORGE_WEB_PASSWORD` are set — credentials compared with constant-time `hmac.compare_digest`, `401`+`WWW-Authenticate` otherwise; the server warns before binding a public interface without it. | `web.py` `_check_auth`/`_auth_credentials`; `tests/test_web.py` |
+| **AC-3** Access Enforcement | AgentForge's *own* dashboard gate | The web dashboard enforces **mandatory, fail-closed** HTTP Basic auth on every route except `/healthz`: valid `AGENTFORGE_WEB_USER`/`AGENTFORGE_WEB_PASSWORD` (constant-time `hmac.compare_digest`) → serve; bad/missing → `401`; **not configured → `503`, panel locked** (an open panel could launch runs = self-DoS). | `web.py` `_check_auth`/`_auth_credentials`; `tests/test_web.py` (`test_fail_closed_when_auth_unconfigured`) |
 | **SI** System Integrity | Independent verification | The Judge (separate model/context) decides success, not the Red Team; a versioned rubric + ground-truth drift check guards judge integrity. | `agents/judge.py`, `evals/ground_truth.json` |
 | **RA** Risk Assessment | Threat modeling | STRIDE/OWASP-mapped threat model precedes testing; findings severity-ranked. | `THREAT_MODEL.md`, `VULNERABILITY_REPORTS.md` |
 | **CA** Assessment & Auth | Continuous assessment + regression | Confirmed exploits become deterministic regression cases re-checked by invariant on every target version. | `regression.py`; `documentation.py` `regression_case` |
@@ -71,7 +71,7 @@ contexts), not by policy alone.
 
 ## 5. Test evidence summary
 
-- **Automated assurance:** 85 passing tests (contracts, agents, drift check,
+- **Automated assurance:** 86 passing tests (contracts, agents, drift check,
   probes, load, web, history) — `pytest tests/ -q`.
 - **Live verification:** auth handshake + full four-agent loop run against the
   deployed target; the co-pilot defended all seeded LLM attacks

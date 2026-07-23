@@ -321,11 +321,29 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _check_auth(self) -> bool:
-        """Enforce HTTP Basic auth when configured. Returns False (and writes a
-        401) when the request is unauthorized."""
+        """Mandatory HTTP Basic auth. Returns False (and writes the response)
+        when the request is not authorized. Every route except ``/healthz``
+        goes through this — the panel can launch runs (even dry-run ones spin up
+        campaigns and hit local resources), so an open panel is a self-DoS
+        vector. Fail-closed: with no credentials configured, nothing serves.
+
+        Three states:
+          * not configured           -> 503, panel is locked until creds are set
+          * configured, bad/missing  -> 401 + WWW-Authenticate (browser prompts)
+          * configured, valid Basic   -> allow
+        """
         creds = _auth_credentials()
         if creds is None:
-            return True
+            # Fail-closed: refuse rather than run open. No WWW-Authenticate — a
+            # login prompt would be futile since no credentials exist to accept.
+            body = (b'{"error":"dashboard authentication is not configured; set '
+                    b'AGENTFORGE_WEB_USER and AGENTFORGE_WEB_PASSWORD to enable login"}')
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
         header = self.headers.get("Authorization", "")
         if header.startswith("Basic "):
             try:
@@ -814,13 +832,13 @@ def main(host: str | None = None, port: int | None = None) -> None:
     port = _resolve_port(port)
     RUNS_DIR.mkdir(exist_ok=True)
 
-    public = host not in ("127.0.0.1", "localhost", "::1")
-    if public and _auth_credentials() is None:
-        print("WARNING: binding to a public interface with NO auth configured. "
-              "Anyone who reaches this URL can launch live attacks and spend the "
-              "target's budget. Set AGENTFORGE_WEB_USER / AGENTFORGE_WEB_PASSWORD.")
-    elif _auth_credentials() is not None:
-        print("auth: HTTP Basic enabled (AGENTFORGE_WEB_USER/PASSWORD)")
+    if _auth_credentials() is not None:
+        print("auth: HTTP Basic REQUIRED on every route except /healthz "
+              "(AGENTFORGE_WEB_USER/PASSWORD)")
+    else:
+        print("auth: LOCKED — AGENTFORGE_WEB_USER/PASSWORD are not set, so the "
+              "dashboard refuses every route except /healthz (503). Set both to "
+              "enable login. This is intentional: an open panel can launch runs.")
 
     server = ThreadingHTTPServer((host, port), Handler)
     shown = host if host != "0.0.0.0" else "0.0.0.0 (all interfaces)"

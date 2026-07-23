@@ -44,16 +44,27 @@ def _free_port():
     return port
 
 
-def test_dashboard_serves_and_runs_dry_campaign():
+def _authed(url_or_req, user="grader", pw="s3cret"):
+    """Wrap a URL/Request with a valid HTTP Basic header (auth is mandatory)."""
+    import base64 as _b64
+    req = (url_or_req if isinstance(url_or_req, urllib.request.Request)
+           else urllib.request.Request(url_or_req))
+    req.add_header("Authorization", "Basic " + _b64.b64encode(f"{user}:{pw}".encode()).decode())
+    return req
+
+
+def test_dashboard_serves_and_runs_dry_campaign(monkeypatch):
+    monkeypatch.setenv("AGENTFORGE_WEB_USER", "grader")
+    monkeypatch.setenv("AGENTFORGE_WEB_PASSWORD", "s3cret")
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), web.Handler)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     base = f"http://127.0.0.1:{port}"
     try:
-        # index + state
-        assert b"AgentForge" in urllib.request.urlopen(base + "/").read()
-        state = json.loads(urllib.request.urlopen(base + "/api/state").read())
+        # index + state (authenticated)
+        assert b"AgentForge" in urllib.request.urlopen(_authed(base + "/")).read()
+        state = json.loads(urllib.request.urlopen(_authed(base + "/api/state")).read())
         assert "prompt_injection" in state["categories"]
         assert state["live_caps"]["max_attempts"] >= 1
 
@@ -63,11 +74,12 @@ def test_dashboard_serves_and_runs_dry_campaign():
             data=json.dumps({"dry_run": True, "mock_policy": "leaky",
                              "rounds": 1, "max_attempts": 3}).encode(),
             headers={"Content-Type": "application/json"}, method="POST")
-        job_id = json.loads(urllib.request.urlopen(req).read())["job_id"]
+        job_id = json.loads(urllib.request.urlopen(_authed(req)).read())["job_id"]
 
         result = None
         for _ in range(50):  # up to ~5s
-            job = json.loads(urllib.request.urlopen(base + f"/api/job/{job_id}").read())
+            job = json.loads(urllib.request.urlopen(
+                _authed(base + f"/api/job/{job_id}")).read())
             if job["status"] in ("done", "error"):
                 result = job
                 break
@@ -77,14 +89,14 @@ def test_dashboard_serves_and_runs_dry_campaign():
         assert result["result"]["reports"]              # leaky target -> reports
 
         # the completed campaign records a cross-run history snapshot
-        hist = json.loads(urllib.request.urlopen(base + "/api/history").read())
+        hist = json.loads(urllib.request.urlopen(_authed(base + "/api/history")).read())
         assert hist["backend"] == "sqlite"             # no DATABASE_URL in tests
         run_id = result["result"]["run_id"]
         assert any(s["run_id"] == run_id for s in hist["series"]), hist
 
         # the run's observability file exposes agent responses with provenance
         detail = json.loads(urllib.request.urlopen(
-            base + "/api/file/" + result["result"]["observability"]).read())
+            _authed(base + "/api/file/" + result["result"]["observability"])).read())
         ar = detail["agent_responses"]
         assert ar["attempts"] and ar["verdicts"]
         # deterministic dry-run -> everything tagged deterministic
@@ -94,13 +106,50 @@ def test_dashboard_serves_and_runs_dry_campaign():
         server.shutdown()
 
 
-def test_unknown_job_is_404():
+def test_fail_closed_when_auth_unconfigured(monkeypatch):
+    # With no credentials set, every route except /healthz is locked (503) — an
+    # open panel could launch runs, so it refuses rather than run open.
+    monkeypatch.delenv("AGENTFORGE_WEB_USER", raising=False)
+    monkeypatch.delenv("AGENTFORGE_WEB_PASSWORD", raising=False)
     port = _free_port()
     server = ThreadingHTTPServer(("127.0.0.1", port), web.Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
     try:
+        # /healthz stays open for the PaaS liveness probe
+        assert json.loads(urllib.request.urlopen(base + "/healthz").read())["ok"] is True
+        # everything else is locked closed
+        for path, method in [("/", "GET"), ("/api/state", "GET")]:
+            try:
+                urllib.request.urlopen(base + path)
+                assert False, f"expected 503 for {path}"
+            except urllib.error.HTTPError as e:
+                assert e.code == 503, (path, e.code)
+        # a spend/live path (campaign launch) is also refused
+        req = urllib.request.Request(
+            base + "/api/campaign",
+            data=json.dumps({"dry_run": True}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
         try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/job/nope")
+            urllib.request.urlopen(req)
+            assert False, "expected 503 for /api/campaign"
+        except urllib.error.HTTPError as e:
+            assert e.code == 503
+    finally:
+        server.shutdown()
+
+
+def test_unknown_job_is_404(monkeypatch):
+    monkeypatch.setenv("AGENTFORGE_WEB_USER", "grader")
+    monkeypatch.setenv("AGENTFORGE_WEB_PASSWORD", "s3cret")
+    port = _free_port()
+    server = ThreadingHTTPServer(("127.0.0.1", port), web.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # authenticated but unknown job -> 404
+        try:
+            urllib.request.urlopen(_authed(base + "/api/job/nope"))
             assert False, "expected 404"
         except urllib.error.HTTPError as e:
             assert e.code == 404

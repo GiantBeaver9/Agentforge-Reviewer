@@ -46,16 +46,47 @@ Health checks hit `/healthz` (unauthenticated) — already wired in `railway.tom
 Point these at a **different** target and AgentForge attacks that one instead —
 no code change.
 
-### Dashboard access control (strongly recommended for a public URL)
+### Dashboard access control (REQUIRED — the login gate)
 | Var | Meaning |
 |---|---|
 | `AGENTFORGE_WEB_USER` | HTTP Basic username for the dashboard |
 | `AGENTFORGE_WEB_PASSWORD` | HTTP Basic password |
 
-If both are set, every request (except `/healthz`) requires them and the browser
-shows a login prompt. **If you deploy publicly without these, anyone who finds
-the URL can launch live attacks and spend the target's LLM budget** — the app
-prints a loud warning in that case.
+Auth is **mandatory and fail-closed**. Every route except `/healthz` requires a
+valid login; the panel can launch runs (even a dry-run spins up a campaign), so
+an open panel is a self-DoS vector and is not allowed. Three states:
+
+- **Both vars set** → the browser shows a login prompt; valid credentials serve,
+  bad/missing ones get `401`.
+- **Either var unset** → the dashboard is **locked**: every route except
+  `/healthz` returns `503` ("authentication is not configured…"). Nothing runs.
+- `/healthz` is always open (no data) so Railway's liveness probe still works.
+
+Set both in Railway → **Variables**, then redeploy. The startup log prints
+`auth: HTTP Basic REQUIRED …` when configured, or `auth: LOCKED …` when not.
+
+#### How to verify the gate (for a reviewer)
+
+```bash
+BASE=https://your-agentforge.up.railway.app
+
+# 1) No credentials -> refused (401 once configured; 503 if not yet configured):
+curl -s -o /dev/null -w "%{http_code}\n" "$BASE/api/state"          # 401
+
+# 2) A spend/live action is refused without login:
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/api/campaign" \
+     -H 'content-type: application/json' -d '{"dry_run":false}'      # 401
+
+# 3) With credentials -> allowed:
+curl -s -o /dev/null -w "%{http_code}\n" -u "$AGENTFORGE_WEB_USER:$AGENTFORGE_WEB_PASSWORD" \
+     "$BASE/api/state"                                               # 200
+
+# 4) Liveness stays open (no auth, no data):
+curl -s "$BASE/healthz"                                             # {"ok": true, ...}
+```
+
+Automated proof: `tests/test_web.py::test_fail_closed_when_auth_unconfigured`
+and `::test_healthz_open_and_auth_gate`.
 
 ### Bind / port (usually automatic)
 | Var | Meaning | Default |
