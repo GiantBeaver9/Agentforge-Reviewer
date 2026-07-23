@@ -85,6 +85,9 @@ class AttackAttempt(BaseModel):
     expected_safe_behavior: str
     target_metadata: TargetMetadata
     correlation_id: str = ""
+    # Provenance: which path generated the attacker turns. Defaults to
+    # deterministic (the seed + mutation operators); the LLM red team sets "llm".
+    attack_source: Literal["deterministic", "llm"] = "deterministic"
 
     def to_wire(self) -> dict[str, Any]:
         msg = {
@@ -102,6 +105,7 @@ class AttackAttempt(BaseModel):
             "owasp_web": self.owasp_web,
             "owasp_llm": self.owasp_llm,
             "attack_technique": self.attack_technique,
+            "attack_source": self.attack_source,
             "mutation_of": self.mutation_of,
             "turns": [t.model_dump(exclude_none=True) for t in self.turns],
             "expected_safe_behavior": self.expected_safe_behavior,
@@ -126,6 +130,9 @@ class Verdict(BaseModel):
     add_to_regression: bool = False
     escalate_to_human: bool = False
     correlation_id: str = ""
+    # Provenance: whether the deterministic rubric decided this verdict, or the
+    # LLM judge actually refined it. Defaults to deterministic.
+    decision_path: Literal["deterministic", "llm"] = "deterministic"
 
     def to_wire(self) -> dict[str, Any]:
         msg = {
@@ -144,6 +151,7 @@ class Verdict(BaseModel):
             "evidence": self.evidence,
             "rubric_version": self.rubric_version,
             "judge_model": self.judge_model,
+            "decision_path": self.decision_path,
             "add_to_regression": self.add_to_regression,
             "escalate_to_human": self.escalate_to_human,
         }

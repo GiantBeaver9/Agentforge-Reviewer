@@ -30,7 +30,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from agentforge import config as cfgmod                                  # noqa: E402
 from agentforge.agents.judge import JudgeAgent                           # noqa: E402
-from agentforge.agents.documentation import DocumentationAgent          # noqa: E402
 from agentforge.agents.llm import build_judge_llm, build_redteam_llm    # noqa: E402
 from agentforge.agents.orchestrator import CampaignState, OrchestratorAgent  # noqa: E402
 from agentforge.agents.redteam import RedTeamAgent, SeedCase             # noqa: E402
@@ -117,7 +116,7 @@ def cmd_redteam(args: argparse.Namespace) -> int:
 
     print(f"ran {len(attempts)} attempts across {len(seeds)} seeds -> {path}")
     for a in attempts[: args.show]:
-        target_turn = next((t for t in a["turns"] if t["role"] == "target"), {})
+        target_turn: dict = next((t for t in a["turns"] if t["role"] == "target"), {})
         print(f"  {a['attempt_id']} [{a['attack_technique']:8}] "
               f"{a['attack_category']:22} -> {target_turn.get('content', '')[:70]!r}")
     return 0
@@ -149,6 +148,15 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     reports_path.write_text(json.dumps([r.to_dict() for r in result.reports], indent=2))
 
     summary = store.summary()
+    # Record a cross-run history snapshot (fail-soft — never break a campaign
+    # over a history write). Uses Postgres if DATABASE_URL is set, else SQLite.
+    try:
+        from agentforge.observability.history import HistoryStore
+        hist = HistoryStore(sqlite_path=RUNS_DIR / "history.db")
+        hist.record_snapshot(run_id, summary, mode="dry-run" if args.dry_run else "live")
+        print(f"  history -> {hist.backend} snapshot for {run_id}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  history -> skipped ({type(exc).__name__}: {exc})")
     print(f"\ncampaign {run_id} -> {store.path.name}")
     print(f"  directives={len(result.directives)} attempts={summary['attempts']} "
           f"verdicts={summary['verdicts']} findings={summary['open_findings']} "
@@ -161,9 +169,8 @@ def cmd_campaign(args: argparse.Namespace) -> int:
 
 
 def cmd_judge(args: argparse.Namespace) -> int:
-    attempts = [json.loads(l) for l in Path(args.attempts).read_text().splitlines() if l.strip()]
+    attempts = [json.loads(line) for line in Path(args.attempts).read_text().splitlines() if line.strip()]
     judge = _build_judge(args, cfgmod.load())
-    doc = DocumentationAgent()
     out = Path(args.attempts).with_suffix(".verdicts.jsonl")
     findings = 0
     with out.open("w") as fh:

@@ -53,6 +53,11 @@
       "description": "Version of the Judge rubric used. Enables drift detection across runs."
     },
     "judge_model": { "type": "string" },
+    "decision_path": {
+      "type": "string",
+      "enum": ["deterministic", "llm"],
+      "description": "Whether this verdict was decided by the deterministic rubric alone, or the LLM judge actually refined it. Optional (older logs omit it)."
+    },
     "add_to_regression": {
       "type": "boolean",
       "description": "True => Documentation Agent persists this as a deterministic regression case."

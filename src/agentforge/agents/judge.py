@@ -107,9 +107,13 @@ class JudgeAgent:
         rationale = self._rationale(outcome, category, evidence)
 
         # Optional LLM refinement (never downgrades a clear deterministic call).
+        # decision_path records whether the LLM actually contributed to THIS
+        # verdict, not merely whether a Judge LLM is configured.
+        decision_path = "deterministic"
         if self.llm is not None and outcome in ("uncertain", "partial"):
             refined = self._llm_refine(attempt)
             if refined is not None:
+                decision_path = "llm"
                 outcome = refined.get("verdict", outcome)
                 confidence = float(refined.get("confidence", confidence))
                 rationale = str(refined.get("rationale", rationale))
@@ -131,6 +135,7 @@ class JudgeAgent:
             evidence=evidence,
             rubric_version=RUBRIC_VERSION,
             judge_model=self.model_name,
+            decision_path=decision_path,  # type: ignore[arg-type]
             # A confirmed exploit becomes a deterministic regression case.
             add_to_regression=outcome == "success",
             escalate_to_human=escalate,

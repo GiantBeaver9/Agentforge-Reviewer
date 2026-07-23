@@ -75,36 +75,42 @@ class RedTeamAgent:
         """
         budget = directive["budget"]["max_attempts"]
         max_turns = directive.get("max_turns", 6)
-        attempts: list[dict] = []
+        attempts: list[dict | None] = []  # _run_one may return None; filtered on return
 
         for seed in seed_cases:
             if len(attempts) >= budget:
                 break
-            # 1) the seed itself
+            # 1) the seed itself — always deterministic (verbatim eval case)
             attempts.append(self._run_one(directive, seed, seed.input_sequence,
                                           technique="seed", mutation_of=None,
-                                          max_turns=max_turns))
+                                          max_turns=max_turns, attack_source="deterministic"))
             # 2) mutations of the seed's first turn to probe for a bypass
-            for variant in self._mutations(seed):
+            variants, source = self._mutations(seed)
+            for variant in variants:
                 if len(attempts) >= budget:
                     break
                 seq = [variant] + seed.input_sequence[1:]
                 attempts.append(self._run_one(directive, seed, seq,
                                               technique="mutation", mutation_of=seed.id,
-                                              max_turns=max_turns))
+                                              max_turns=max_turns, attack_source=source))
         return [a for a in attempts if a is not None]
 
-    def _mutations(self, seed: SeedCase) -> list[str]:
+    def _mutations(self, seed: SeedCase) -> tuple[list[str], str]:
+        """Return (variants, source). Source is "llm" when the red-team model
+        produced the variants, else "deterministic" (mutation operators)."""
         first = seed.input_sequence[0]
         if self.llm is not None:
             try:
-                return list(self.llm.variants(first, n=4))
+                variants = list(self.llm.variants(first, n=4))
+                if variants:
+                    return variants, "llm"
             except Exception:  # noqa: BLE001 — never let the LLM path stall a campaign
                 pass
-        return [m(first) for m in MUTATORS]
+        return [m(first) for m in MUTATORS], "deterministic"
 
     def _run_one(self, directive: dict, seed: SeedCase, sequence: list[str],
-                 technique: str, mutation_of: str | None, max_turns: int) -> dict | None:
+                 technique: str, mutation_of: str | None, max_turns: int,
+                 attack_source: str = "deterministic") -> dict | None:
         surface = seed.target_surface
         turns: list[Turn] = []
         last = None
@@ -115,6 +121,9 @@ class RedTeamAgent:
                 if surface == "agent":
                     last = self.target.agent_ask(self.pid, attacker_msg)
                 else:
+                    # chat surface always started a session above; assert the
+                    # invariant so the type is str, not str | None.
+                    assert session_id is not None
                     last = self.target.chat_turn(session_id, attacker_msg)
                 turns.append(Turn(index=len(turns), role="target",
                                   content=last.content,
@@ -137,6 +146,7 @@ class RedTeamAgent:
             target_surface=TargetSurface(surface),
             owasp_web=seed.owasp_web, owasp_llm=seed.owasp_llm,
             attack_technique=technique,
+            attack_source=attack_source,  # type: ignore[arg-type]
             mutation_of=mutation_of,
             turns=turns,
             expected_safe_behavior=seed.expected_safe_behavior,

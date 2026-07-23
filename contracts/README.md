@@ -37,7 +37,12 @@ be traced Orchestrator → Red Team → Judge → Documentation through the logs
 
 - Schemas are semver'd via `schema_version` (currently `1.0.0`) and live under a
   major-version directory (`v1/`).
-- **Additive, optional** field → minor bump, same directory.
+- **Additive, optional** field → minor bump, same directory. (An optional
+  property that leaves every prior message valid — e.g. `attack_source` on
+  `redteam_to_judge`, `decision_path` on `judge_to_documentation` — may keep the
+  same `schema_version`, since bumping the `const` would instead *reject* older
+  messages, violating the invariant below. Consumers default the field when a
+  pre-existing log omits it.)
 - **Breaking** change (new required field, removed field, changed enum/type) →
   new major directory (`v2/`), a migration note in `../docs/migrations/`, and
   updated contract tests for both sides. Old consumers keep reading `v1`.

@@ -21,7 +21,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ..contracts.models import AgentError
 
 # Well-known CA bundle for the agent egress proxy (TLS is re-terminated there).
 # httpx does not read the OpenSSL SSL_CERT_FILE env var the way curl does, so we

@@ -46,16 +46,47 @@ Health checks hit `/healthz` (unauthenticated) — already wired in `railway.tom
 Point these at a **different** target and AgentForge attacks that one instead —
 no code change.
 
-### Dashboard access control (strongly recommended for a public URL)
+### Dashboard access control (REQUIRED — the login gate)
 | Var | Meaning |
 |---|---|
 | `AGENTFORGE_WEB_USER` | HTTP Basic username for the dashboard |
 | `AGENTFORGE_WEB_PASSWORD` | HTTP Basic password |
 
-If both are set, every request (except `/healthz`) requires them and the browser
-shows a login prompt. **If you deploy publicly without these, anyone who finds
-the URL can launch live attacks and spend the target's LLM budget** — the app
-prints a loud warning in that case.
+Auth is **mandatory and fail-closed**. Every route except `/healthz` requires a
+valid login; the panel can launch runs (even a dry-run spins up a campaign), so
+an open panel is a self-DoS vector and is not allowed. Three states:
+
+- **Both vars set** → the browser shows a login prompt; valid credentials serve,
+  bad/missing ones get `401`.
+- **Either var unset** → the dashboard is **locked**: every route except
+  `/healthz` returns `503` ("authentication is not configured…"). Nothing runs.
+- `/healthz` is always open (no data) so Railway's liveness probe still works.
+
+Set both in Railway → **Variables**, then redeploy. The startup log prints
+`auth: HTTP Basic REQUIRED …` when configured, or `auth: LOCKED …` when not.
+
+#### How to verify the gate (for a reviewer)
+
+```bash
+BASE=https://your-agentforge.up.railway.app
+
+# 1) No credentials -> refused (401 once configured; 503 if not yet configured):
+curl -s -o /dev/null -w "%{http_code}\n" "$BASE/api/state"          # 401
+
+# 2) A spend/live action is refused without login:
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/api/campaign" \
+     -H 'content-type: application/json' -d '{"dry_run":false}'      # 401
+
+# 3) With credentials -> allowed:
+curl -s -o /dev/null -w "%{http_code}\n" -u "$AGENTFORGE_WEB_USER:$AGENTFORGE_WEB_PASSWORD" \
+     "$BASE/api/state"                                               # 200
+
+# 4) Liveness stays open (no auth, no data):
+curl -s "$BASE/healthz"                                             # {"ok": true, ...}
+```
+
+Automated proof: `tests/test_web.py::test_fail_closed_when_auth_unconfigured`
+and `::test_healthz_open_and_auth_gate`.
 
 ### Bind / port (usually automatic)
 | Var | Meaning | Default |
@@ -97,6 +128,28 @@ REDTEAM_BASE_URL=http://localhost:1234/v1          # LM Studio default (Ollama: 
 REDTEAM_MODEL=<the model you loaded>
 REDTEAM_API_KEY=lm-studio                          # any non-empty string
 ```
+
+### Optional — durable history (Trends over time)
+
+The dashboard's **"Trends over time"** card retains one snapshot per campaign
+(totals + per-category pass rates) so you can see the defended-rate trend across
+runs. It uses two backends, chosen automatically:
+
+| Backend | When | Durability |
+|---|---|---|
+| **Postgres** | `DATABASE_URL` is set | Survives redeploys — **recommended in prod** |
+| SQLite | `DATABASE_URL` unset | Local file `runs/history.db`; **lost on redeploy** (ephemeral PaaS disk) |
+
+On **Railway**: open your project → **New → Database → Add PostgreSQL**. Railway
+provisions it and injects `DATABASE_URL` into your service automatically — no
+manual value to copy. Redeploy and the app creates its `campaign_snapshots`
+table on first write. `psycopg` is already in `requirements*.txt`; it's imported
+only when `DATABASE_URL` points at Postgres, so nothing changes if you skip it.
+
+| Var | Meaning | Default |
+|---|---|---|
+| `DATABASE_URL` | Postgres connection string (Railway injects it) | unset → SQLite |
+| `AGENTFORGE_HISTORY_DB` | Local SQLite path (only when `DATABASE_URL` unset) | `runs/history.db` |
 
 > **Recommended when you have the hardware:** run the Red Team on a local
 > open model via **LM Studio** or Ollama. It's free, never refuses offensive-

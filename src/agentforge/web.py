@@ -75,7 +75,7 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
     from agentforge.agents.orchestrator import CampaignState, OrchestratorAgent
     from agentforge.observability.store import ObservabilityStore
     from agentforge.pipeline import run_campaign
-    from agentforge.target.client import MockTargetClient, OpenEmrTargetClient
+    from agentforge.target.client import MockTargetClient, OpenEmrTargetClient, TargetClient
 
     try:
         dry_run = bool(params.get("dry_run", True))
@@ -92,6 +92,7 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
 
         cfg = cfgmod.load()
         _set(job_id, status="running")
+        target: TargetClient
         if dry_run:
             policy = params.get("mock_policy", "defended")
             target = MockTargetClient(policy=policy)
@@ -143,6 +144,15 @@ def _run_campaign_job(job_id: str, params: dict) -> None:
         reports_path.write_text(json.dumps([r.to_dict() for r in result.reports], indent=2))
 
         summary = store.summary()
+        # Persist a cross-run snapshot for the trends view. Fail-soft: a history
+        # write (e.g. Postgres unreachable) must never fail a completed campaign.
+        try:
+            from agentforge.observability.history import HistoryStore
+            hist = HistoryStore(sqlite_path=RUNS_DIR / "history.db")
+            hist.record_snapshot(run_id, summary, mode="dry-run" if dry_run else "live")
+            _log(job_id, f"history snapshot recorded ({hist.backend})")
+        except Exception as exc:  # noqa: BLE001
+            _log(job_id, f"note: history snapshot skipped ({type(exc).__name__}: {exc})")
         _log(job_id, f"done: {summary['attempts']} attempts, "
                      f"{summary['verdicts']} verdicts, {summary['open_findings']} findings, "
                      f"halt={result.halt.reason if result.halt else None}")
@@ -251,10 +261,22 @@ def _read_json_file(name: str):
             from agentforge.observability.store import ObservabilityStore
             store = ObservabilityStore(p)
             return {"summary": store.summary(), "open_findings": store.open_findings(),
-                    "timeline": store.timeline()}
+                    "timeline": store.timeline(),
+                    "agent_responses": store.agent_responses()}
         return json.loads(p.read_text())
     except Exception as exc:  # noqa: BLE001 — a partial/malformed run file is not fatal
         return {"error": f"could not parse {safe}: {type(exc).__name__}"}
+
+
+def _history() -> dict:
+    """Cross-run trend series for the dashboard. Fail-soft: an unreachable DB
+    returns an empty series with the error, never a 500."""
+    try:
+        from agentforge.observability.history import HistoryStore
+        return HistoryStore(sqlite_path=RUNS_DIR / "history.db").trends()
+    except Exception as exc:  # noqa: BLE001
+        return {"backend": "unavailable", "count": 0, "series": [],
+                "error": f"{type(exc).__name__}: {exc}"}
 
 
 def _categories() -> list[str]:
@@ -299,11 +321,29 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _check_auth(self) -> bool:
-        """Enforce HTTP Basic auth when configured. Returns False (and writes a
-        401) when the request is unauthorized."""
+        """Mandatory HTTP Basic auth. Returns False (and writes the response)
+        when the request is not authorized. Every route except ``/healthz``
+        goes through this — the panel can launch runs (even dry-run ones spin up
+        campaigns and hit local resources), so an open panel is a self-DoS
+        vector. Fail-closed: with no credentials configured, nothing serves.
+
+        Three states:
+          * not configured           -> 503, panel is locked until creds are set
+          * configured, bad/missing  -> 401 + WWW-Authenticate (browser prompts)
+          * configured, valid Basic   -> allow
+        """
         creds = _auth_credentials()
         if creds is None:
-            return True
+            # Fail-closed: refuse rather than run open. No WWW-Authenticate — a
+            # login prompt would be futile since no credentials exist to accept.
+            body = (b'{"error":"dashboard authentication is not configured; set '
+                    b'AGENTFORGE_WEB_USER and AGENTFORGE_WEB_PASSWORD to enable login"}')
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return False
         header = self.headers.get("Authorization", "")
         if header.startswith("Basic "):
             try:
@@ -376,6 +416,8 @@ class Handler(BaseHTTPRequestHandler):
             data = _read_json_file(name)
             return self._json(data if data is not None else {"error": "not found"},
                               200 if data is not None else 404)
+        if path == "/api/history":
+            return self._json(_history())
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):  # noqa: N802
@@ -445,6 +487,11 @@ _INDEX_HTML = r"""<!doctype html>
   .runitem{display:flex;justify-content:space-between;padding:6px 0;
     border-bottom:1px solid var(--line);cursor:pointer}
   .runitem:hover{color:var(--acc)}
+  .tabs{display:flex;gap:6px;margin:6px 0 10px}
+  .tab{width:auto;margin:0;padding:5px 12px;background:transparent;
+    border:1px solid var(--line);color:var(--mut);font-weight:600;border-radius:20px}
+  .tab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  h4{font-size:12px;margin:12px 0 4px}
 </style></head><body>
 <header><h1>⚔️ AgentForge</h1>
   <span class="sub">control panel — multi-agent adversarial evaluation of the Clinical Co-Pilot</span>
@@ -493,6 +540,10 @@ _INDEX_HTML = r"""<!doctype html>
       <h2>Current job <span id="jobStatus" class="pill"></span></h2>
       <div class="log" id="jobLog"></div>
       <div id="jobResult"></div>
+    </div>
+    <div class="card">
+      <h2>Trends over time <span id="histBackend" class="mut" style="font-size:11px"></span></h2>
+      <div id="trends" class="mut">loading…</div>
     </div>
     <div class="card">
       <h2>Runs</h2>
@@ -632,17 +683,25 @@ function renderRuns(runs){
   const el=$("#runs"); if(!runs){el.textContent="none yet";return;}
   let h="";
   (runs.campaigns||[]).forEach(c=>{ const s=c.summary;
-    h+=`<div class="runitem" onclick="openDetail('${c.file}','campaign')">
+    h+=`<div class="runitem" data-file="${esc(c.file)}" data-kind="campaign">
       <span class="mono">${esc(c.file)}</span>
       <span class="mut">${s.attempts} att · ${s.open_findings} find</span></div>`; });
   (runs.probes||[]).forEach(f=>{
-    h+=`<div class="runitem" onclick="openDetail('${f}','probe')">
+    h+=`<div class="runitem" data-file="${esc(f)}" data-kind="probe">
       <span class="mono">${esc(f)}</span><span class="mut">probes</span></div>`; });
   (runs.loadtests||[]).forEach(f=>{
-    h+=`<div class="runitem" onclick="openDetail('${f}','loadtest')">
+    h+=`<div class="runitem" data-file="${esc(f)}" data-kind="loadtest">
       <span class="mono">${esc(f)}</span><span class="mut">load test</span></div>`; });
   el.innerHTML = h || '<span class="mut">no runs yet — launch one above</span>';
 }
+
+// Delegated: run items carry data-file/data-kind (no inline handler, so a
+// filename can never enter a JS-string context) and this listener on the stable
+// parent survives renderRuns() replacing the children.
+$("#runs").addEventListener("click", e=>{
+  const item=e.target.closest(".runitem"); if(!item) return;
+  openDetail(item.dataset.file, item.dataset.kind);
+});
 
 function openDetail(file, kind){
   fetch("/api/file/"+encodeURIComponent(file)).then(r=>r.json()).then(d=>{
@@ -655,15 +714,103 @@ function openDetail(file, kind){
         <b class="${sevClass(v.severity)}">${esc(v.severity).toUpperCase()}</b>
         attempt <span class="mono">${esc(v.attempt_id)}</span> — ${esc(v.rationale||"")}</div>`).join("")
       : '<p class="mut">No open findings in this run.</p>';
+    h+=agentResponsesHtml(d.agent_responses);
     $("#detail").innerHTML=h;
   });
 }
 
-function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>(
-  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+// Agent responses, tabbed by which path produced each attack/verdict.
+function agentResponsesHtml(ar){
+  if(!ar || (!(ar.attempts||[]).length && !(ar.verdicts||[]).length)) return "";
+  const det=provGroup(ar,"deterministic"), llm=provGroup(ar,"llm");
+  return `<h3>Agent responses</h3>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-prov="deterministic">Deterministic (${det.n})</button>
+      <button class="tab" data-prov="llm">LLM-run (${llm.n})</button></div>
+    <div class="provpane" data-prov="deterministic">${det.html}</div>
+    <div class="provpane" data-prov="llm" style="display:none">${llm.html}</div>`;
+}
 
-caps(); updateLiveWarn();
-setInterval(()=>{ if(!poll) fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs)); }, 5000);
+function provGroup(ar, prov){
+  const at=(ar.attempts||[]).filter(a=>(a.attack_source||"deterministic")===prov);
+  const vd=(ar.verdicts||[]).filter(v=>(v.decision_path||"deterministic")===prov);
+  const n=at.length+vd.length;
+  if(!n) return {n:0, html:`<p class="mut">Nothing was produced by the ${prov} path in this run.</p>`};
+  let h="";
+  if(at.length){
+    h+=`<h4 class="mut">Red Team — ${at.length} attempt${at.length>1?"s":""}</h4>`+
+      `<table><tr><th>technique</th><th>category / surface</th><th>attacker</th><th>target response</th></tr>`+
+      at.map(a=>`<tr><td>${esc(a.attack_technique)}</td>
+        <td class="mut">${esc(a.attack_category)} / ${esc(a.target_surface)}</td>
+        <td>${esc(a.attacker)}</td><td class="mut">${esc(a.target)}</td></tr>`).join("")+`</table>`;
+  }
+  if(vd.length){
+    h+=`<h4 class="mut">Judge — ${vd.length} verdict${vd.length>1?"s":""}</h4>`+
+      `<table><tr><th>verdict</th><th>sev</th><th>conf</th><th>model</th><th>rationale</th></tr>`+
+      vd.map(v=>`<tr><td>${esc(v.verdict)}</td>
+        <td class="${sevClass(v.severity)}">${esc(v.severity)}</td>
+        <td>${v.confidence==null?"":Number(v.confidence).toFixed(2)}</td>
+        <td class="mono">${esc(v.judge_model)}</td>
+        <td class="mut">${esc(v.rationale)}</td></tr>`).join("")+`</table>`;
+  }
+  return {n, html:h};
+}
+
+// Delegated: tab clicks toggle the visible provenance pane. Listener sits on the
+// stable #detail parent so it survives openDetail() replacing the content.
+$("#detail").addEventListener("click", e=>{
+  const tab=e.target.closest(".tab"); if(!tab) return;
+  const root=tab.closest("#detail"); const prov=tab.dataset.prov;
+  root.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t===tab));
+  root.querySelectorAll(".provpane").forEach(p=>{
+    p.style.display = (p.dataset.prov===prov) ? "" : "none"; });
+});
+
+function renderTrends(){
+  fetch("/api/history").then(r=>r.json()).then(h=>{
+    $("#histBackend").textContent = h.backend ? "· "+h.backend : "";
+    const el=$("#trends"), s=(h.series||[]);
+    if(!s.length){ el.innerHTML = h.error
+        ? `<span class="mut">history unavailable (${esc(h.error)})</span>`
+        : '<span class="mut">no campaigns recorded yet — launch one to start the trend</span>';
+      return; }
+    el.innerHTML = trendChart(s) + trendTable(s);
+  }).catch(()=>{});
+}
+
+function trendChart(s){
+  const pts=s.map((d,i)=>({i, v:d.pass_rate})).filter(p=>p.v!=null);
+  if(!pts.length) return '<p class="mut">no judged runs yet</p>';
+  const n=s.length, X=i=> n<=1?50:(i/(n-1))*100, Y=v=> 38-(v*36);
+  const line=pts.map(p=>`${X(p.i).toFixed(1)},${Y(p.v).toFixed(1)}`).join(" ");
+  const dots=pts.map(p=>`<circle cx="${X(p.i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="1.1" fill="var(--acc)"/>`).join("");
+  return `<svg viewBox="0 0 100 40" preserveAspectRatio="none" role="img"
+      aria-label="defended-rate over time"
+      style="width:100%;height:90px;background:var(--bg);border:1px solid var(--line);border-radius:7px">
+    <line x1="0" y1="2" x2="100" y2="2" stroke="var(--line)" stroke-width="0.3"/>
+    <line x1="0" y1="20" x2="100" y2="20" stroke="var(--line)" stroke-width="0.3"/>
+    <line x1="0" y1="38" x2="100" y2="38" stroke="var(--line)" stroke-width="0.3"/>
+    <polyline points="${line}" fill="none" stroke="var(--acc)" stroke-width="0.8"/>${dots}
+  </svg>
+  <div class="mut" style="font-size:11px;display:flex;justify-content:space-between">
+    <span>defended-rate (pass) over ${n} run${n>1?'s':''}</span><span>1.0 top · 0.0 bottom</span></div>`;
+}
+
+function trendTable(s){
+  const rows=s.slice().reverse().slice(0,8).map(d=>`<tr>
+    <td class="mono">${esc(d.run_id)}</td><td class="mut">${esc(d.mode)}</td>
+    <td>${d.pass_rate==null?"n/a":d.pass_rate.toFixed(2)}</td>
+    <td>${d.open_findings}</td>
+    <td class="mut">${esc((d.recorded_at||"").slice(0,16).replace("T"," "))}</td></tr>`).join("");
+  return `<table style="margin-top:8px"><tr><th>run</th><th>mode</th><th>pass</th>`+
+    `<th>find</th><th>when</th></tr>${rows}</table>`;
+}
+
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>(
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+caps(); updateLiveWarn(); renderTrends();
+setInterval(()=>{ if(!poll){ fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs)); renderTrends(); } }, 5000);
 </script>
 </body></html>"""
 
@@ -685,13 +832,13 @@ def main(host: str | None = None, port: int | None = None) -> None:
     port = _resolve_port(port)
     RUNS_DIR.mkdir(exist_ok=True)
 
-    public = host not in ("127.0.0.1", "localhost", "::1")
-    if public and _auth_credentials() is None:
-        print("WARNING: binding to a public interface with NO auth configured. "
-              "Anyone who reaches this URL can launch live attacks and spend the "
-              "target's budget. Set AGENTFORGE_WEB_USER / AGENTFORGE_WEB_PASSWORD.")
-    elif _auth_credentials() is not None:
-        print("auth: HTTP Basic enabled (AGENTFORGE_WEB_USER/PASSWORD)")
+    if _auth_credentials() is not None:
+        print("auth: HTTP Basic REQUIRED on every route except /healthz "
+              "(AGENTFORGE_WEB_USER/PASSWORD)")
+    else:
+        print("auth: LOCKED — AGENTFORGE_WEB_USER/PASSWORD are not set, so the "
+              "dashboard refuses every route except /healthz (503). Set both to "
+              "enable login. This is intentional: an open panel can launch runs.")
 
     server = ThreadingHTTPServer((host, port), Handler)
     shown = host if host != "0.0.0.0" else "0.0.0.0 (all interfaces)"
