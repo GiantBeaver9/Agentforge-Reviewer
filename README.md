@@ -33,7 +33,9 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | Threat model | ✅ complete |
 | Inter-agent contracts (v1) + tests | ✅ complete, tests green |
 | Seed eval suite (5 categories, OWASP-tagged) | ✅ complete |
-| Red Team agent | ✅ **verified live**; **closed feedback loop** — Judge verdict drives ~10 autonomous variants off a partial/success |
+| Red Team agent | ✅ **verified live**; **closed feedback loop** (Judge verdict → ~10 variants) + **in-conversation multi-turn adaptation** (turn N reacts to the target's turn N-1) |
+| Eval scoring | ✅ **reproducible + judge-independent invariant** (`agentforge eval`); committed `evals/OFFLINE_BASELINE.json`, CI-diffed; `subtle` leak proves non-circularity |
+| Judge/Red-Team independence | ✅ **code-enforced** — campaign refuses generator==grader unless `--allow-same-model` |
 | Target HTTP client (OpenEMR auth) | ✅ **auth + CSRF handshake verified live** |
 | Judge agent (rubric `1.0.0` + ground-truth drift check) | ✅ complete, tests green |
 | Orchestrator (coverage/severity scoring + budget/halt) | ✅ complete, tests green |
@@ -41,7 +43,7 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | Human-approval gate (real, enforced) | ✅ `publish()`/`publish` CLI **refuse** a critical without a named approver (not a label) |
 | Regression harness (invariant replay + siblings + cross-category) | ✅ **3-way** held/regressed/inconclusive (uncertain ≠ pass); triggered in-loop + `regression` CLI |
 | Typed errors on the wire | ✅ `budget_exceeded`/`no_findings_in_window`/`target_unreachable`/`judge_timeout`/`regression_detected` emitted via schema-validated `AgentError` |
-| Cost accounting (per-attempt → budget breaker + **per-component breakdown**) | ✅ drives `budget_exceeded` halt; `cost_breakdown()` splits target/Judge + per-attempt rate |
+| Cost accounting (per-attempt → budget breaker + **per-component breakdown**) | ✅ drives `budget_exceeded` halt; `cost_breakdown()` splits target/Judge + per-attempt rate; LLM Judge billed from **real token usage** when reported |
 | Contract validation (producer **and** consumer on all 3 boundaries) | ✅ directive now has a pydantic model + consumer-side check, tests green |
 | PHI redaction on persisted evidence + dashboard | ✅ clinical values scrubbed at write time (`redact.py`); attack marker retained |
 | Observability (per-version pass/fail + finding **lifecycle** open→resolved) | ✅ lifecycle driven live by regression outcome; answers all 6 required questions |
@@ -49,7 +51,7 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | CI (`.github/workflows`) | ✅ suite + offline smoke + regression-scan SLO |
 | LangGraph runtime (4 agents over typed edges) | ✅ optional; invocable via `campaign --use-langgraph`, plain runner canonical |
 
-All four agents and the deterministic substrate are implemented — **133 passing
+All four agents and the deterministic substrate are implemented — **143 passing
 tests** — and the full loop has been run live against the deployed co-pilot
 (which defended the seeded attacks). The closed feedback loop, exploit promotion,
 cost-based budget breaker, 3-way regression, consumer-side contract validation,
@@ -126,6 +128,8 @@ PYTHONPATH=src python -m agentforge.cli campaign --use-llm-judge --use-llm-redte
 - [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md) — baseline perf + 100-req load test + bottleneck.
 - [`docs/ATO_EVIDENCE.md`](docs/ATO_EVIDENCE.md) — ATO-style control/evidence packet.
 - [`docs/INTEGRATION_PACKET.md`](docs/INTEGRATION_PACKET.md) — CI/CD + ops integration.
+- [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) — the platform's own exploit-data stores + write-access controls.
+- [`docs/evidence/`](docs/evidence/) — committed redacted trace + load sample (reproducible artifacts).
 - [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md) — 3–5 min demo storyboard.
 - [`docs/SOCIAL_POST.md`](docs/SOCIAL_POST.md) — social post drafts (tag @GauntletAI).
 - [`docs/LIVE_RUN_EVIDENCE.md`](docs/LIVE_RUN_EVIDENCE.md) — verified live-run log.
@@ -172,8 +176,9 @@ agentforge/
     web.py               # local web dashboard (stdlib only) — GUI control panel
     loadtest.py          # baseline load test of the cheap unauth surface
     redact.py            # PHI redaction for persisted evidence + dashboard
-    cli.py               # redteam|campaign|judge|regression|publish|lifecycle|dashboard|probe|web|loadtest
+    evalrunner.py        # reproducible eval scoring via a judge-INDEPENDENT invariant
+    cli.py               # redteam|campaign|judge|eval|regression|publish|lifecycle|dashboard|probe|web|loadtest
   tests/                 # contracts, models, redteam, observability, judge, documentation,
-                         # orchestrator+pipeline, regression, wiring, adaptive, llm-e2e,
-                         # versioning/lifecycle, typed-errors, redact, fix-validation (133 green)
+                         # orchestrator+pipeline, regression, wiring, adaptive, llm-e2e, evalrunner,
+                         # versioning/lifecycle, typed-errors, redact, fix-validation (143 green)
 ```

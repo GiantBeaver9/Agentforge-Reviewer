@@ -82,6 +82,17 @@ def _load_ground_truth() -> list[dict]:
     return json.loads(gt.read_text()) if gt.exists() else []
 
 
+def _load_all_eval_cases(category: str | None = None) -> list[dict]:
+    """All eval case dicts (every surface), for the reproducible eval runner."""
+    cases = []
+    for f in sorted(glob.glob(str(CASES_DIR / "*.json"))):
+        for d in json.loads(Path(f).read_text()):
+            if category and d["attack_category"] != category:
+                continue
+            cases.append(d)
+    return cases
+
+
 # Confirmed exploits promoted from prior campaigns live here (JSONL, one
 # regression case per line). Under runs/ it is ephemeral like every other run
 # artifact; attach a volume (DEPLOY.md) to make promotion durable across deploys.
@@ -180,6 +191,17 @@ def cmd_redteam(args: argparse.Namespace) -> int:
 
 def cmd_campaign(args: argparse.Namespace) -> int:
     cfg = cfgmod.load()
+    # Enforce generator != grader before spending anything: refuse a run that
+    # points the Judge and Red Team at the same model, unless explicitly allowed.
+    collision = cfg.check_judge_independence(
+        getattr(args, "use_llm_judge", False), getattr(args, "use_llm_redteam", False))
+    if collision and not getattr(args, "allow_same_model", False):
+        print(f"REFUSED (independence): {collision}\n"
+              "  Override with --allow-same-model only if you accept the conflict.",
+              file=sys.stderr)
+        return 4
+    if collision:
+        print(f"[warn] independence override: {collision}")
     target = _make_target(args)
     seeds = _load_seed_cases(args.category)
     if not seeds:
@@ -368,6 +390,47 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Run the eval suite and score each case by a Judge-INDEPENDENT invariant.
+
+    Results are written (not hand-authored), so the outcome is reproducible; on
+    the offline mock it is deterministic and compared to a committed baseline.
+    """
+    from agentforge.evalrunner import run_eval_suite, suite_report
+    cases = _load_all_eval_cases(args.category)
+    target = _make_target(args)
+    outcomes = run_eval_suite(target, cases, pinned_pid=args.pid)
+    report = suite_report(outcomes)
+
+    RUNS_DIR.mkdir(exist_ok=True)
+    out = RUNS_DIR / f"eval-{uuid4().hex[:8]}.json"
+    out.write_text(json.dumps(report, indent=2))
+
+    print(f"eval: {report['by_result']} over {report['total']} cases -> {out}")
+    flags = {"pass": "PASS ", "fail": "FAIL ", "not_run": "SKIP "}
+    for o in outcomes[: args.show if hasattr(args, "show") else 40]:
+        print(f"  [{flags.get(o.result, o.result)}] {o.case_id:14} "
+              f"{o.attack_category:26} {o.detail}")
+
+    if args.baseline:
+        base_path = Path(args.baseline)
+        if base_path.exists():
+            base = json.loads(base_path.read_text())
+            got = {c["case_id"]: c["result"] for c in report["cases"]}
+            want = {c["case_id"]: c["result"] for c in base["cases"]}
+            if got != want:
+                diff = {k: (want.get(k), got.get(k)) for k in set(got) | set(want)
+                        if got.get(k) != want.get(k)}
+                print(f"BASELINE MISMATCH vs {base_path.name}: {diff}", file=sys.stderr)
+                return 1
+            print(f"  reproduces baseline {base_path.name} exactly ({len(got)} cases)")
+        else:
+            base_path.parent.mkdir(parents=True, exist_ok=True)
+            base_path.write_text(json.dumps(report, indent=2))
+            print(f"  wrote new baseline -> {base_path}")
+    return 0
+
+
 def cmd_lifecycle(args: argparse.Namespace) -> int:
     """Transition a finding's remediation lifecycle (open/in_progress/resolved).
 
@@ -482,7 +545,8 @@ def main(argv: list[str] | None = None) -> int:
     def add_target_opts(sp):
         sp.add_argument("--category", default=None, help="attack_category to focus on")
         sp.add_argument("--dry-run", action="store_true", help="use the offline mock target")
-        sp.add_argument("--mock-policy", default="defended", choices=["defended", "leaky"])
+        sp.add_argument("--mock-policy", default="defended",
+                        choices=["defended", "leaky", "subtle"])
         sp.add_argument("--pid", type=int, default=1, help="pinned patient id")
         sp.add_argument("--show", type=int, default=10)
 
@@ -505,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
     cp.add_argument("--use-langgraph", action="store_true",
                     help="execute via the LangGraph StateGraph runtime if installed "
                          "(falls back to the plain runner otherwise)")
+    cp.add_argument("--allow-same-model", action="store_true",
+                    help="override the independence guard (Judge == Red Team model). Not recommended.")
     cp.set_defaults(func=cmd_campaign)
 
     ju = sub.add_parser("judge", help="(re)judge a captured attempts file offline")
@@ -528,6 +594,12 @@ def main(argv: list[str] | None = None) -> int:
     lc.add_argument("--finding-id", required=True)
     lc.add_argument("--state", required=True, choices=["open", "in_progress", "resolved"])
     lc.set_defaults(func=cmd_lifecycle)
+
+    ev = sub.add_parser("eval", help="run the eval suite with a judge-independent invariant (reproducible)")
+    add_target_opts(ev)
+    ev.add_argument("--baseline", default=str(ROOT / "evals" / "OFFLINE_BASELINE.json"),
+                    help="baseline JSON to reproduce/compare (created if absent)")
+    ev.set_defaults(func=cmd_eval)
 
     rg = sub.add_parser("regression", help="replay the regression suite (invariant-based)")
     add_target_opts(rg)

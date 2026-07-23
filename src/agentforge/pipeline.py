@@ -72,6 +72,7 @@ def run_campaign(
     ground_truth: list[dict[str, Any]] | None = None,
     enable_adaptive: bool = True,
     adaptive_variants: int = 10,
+    adaptive_turns: bool = True,
 ) -> CampaignResult:
     """Run the full Orchestrator→RedTeam→Judge→Documentation loop to a halt.
 
@@ -102,7 +103,8 @@ def run_campaign(
     documentation = documentation or DocumentationAgent()
     orchestrator = orchestrator or OrchestratorAgent(store, CampaignState(
         max_attempts=max_attempts_per_round * max_rounds))
-    redteam = RedTeamAgent(target=target, pinned_pid=pinned_pid, llm=redteam_llm)
+    redteam = RedTeamAgent(target=target, pinned_pid=pinned_pid, llm=redteam_llm,
+                           adaptive_turns=adaptive_turns)
     by_cell = _seed_index(seeds)
     result = CampaignResult()
     regression_cases = regression_cases if regression_cases is not None else seeds
@@ -167,7 +169,7 @@ def run_campaign(
             store.record(redact_verdict(verdict))
             result.verdicts.append(verdict)
             if verdict.get("decision_path") == "llm":
-                _record_judge_cost(store, attempt, verdict)
+                _record_judge_cost(store, attempt, verdict, judge)
             if getattr(judge, "last_llm_error", False):
                 # LLM refinement was attempted but failed; the deterministic
                 # rubric produced this verdict. Surface it as a typed error.
@@ -431,13 +433,20 @@ def _record_escalation(store: ObservabilityStore, attempt: dict[str, Any],
 
 
 def _record_judge_cost(store: ObservabilityStore, attempt: dict[str, Any],
-                       verdict: dict[str, Any]) -> None:
-    transcript = "\n".join(f"{t['role']}: {t['content']}" for t in attempt["turns"])
+                       verdict: dict[str, Any], judge: JudgeAgent) -> None:
+    # Prefer REAL spend: if the LLM Judge reported token usage, bill that; only
+    # fall back to the transcript-length estimate when usage is absent.
+    real = getattr(getattr(judge, "llm", None), "last_cost", None)
+    if real is not None:
+        cost_usd, basis = round(float(real), 8), "actual_usage"
+    else:
+        transcript = "\n".join(f"{t['role']}: {t['content']}" for t in attempt["turns"])
+        cost_usd, basis = costs.judge_llm_cost(transcript, verdict.get("rationale", "")), "estimate"
     store.record({
         "schema_version": "1.0.0", "type": "cost", "producer": "judge",
         "message_id": "jcost", "correlation_id": verdict.get("correlation_id", ""),
         "created_at": _now(),
-        "cost_usd": costs.judge_llm_cost(transcript, verdict.get("rationale", "")),
+        "cost_usd": cost_usd, "basis": basis,
         "component": "judge_llm", "attempt_id": attempt["attempt_id"],
     })
 

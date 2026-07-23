@@ -41,3 +41,30 @@ def test_sibling_replay_expands_coverage():
     # Replays the case plus its data_exfiltration siblings from the corpus.
     assert report.summary()["total"] >= 1
     assert report.passed
+
+
+def test_inconclusive_status_is_produced():
+    # A target whose answer carries neither leak nor defense marker -> the Judge
+    # returns 'uncertain' -> the harness classifies INCONCLUSIVE (not held/pass).
+    from agentforge.target.client import TurnResult
+    from agentforge.regression import INCONCLUSIVE
+
+    class _Ambiguous:
+        def start_chat(self, pid): return "s"
+        def _r(self): return TurnResult(content="Here is some general information.",
+                                        http_status=200, latency_ms=1.0)
+        def chat_turn(self, s, m): return self._r()
+        def agent_ask(self, p, q): return self._r()
+
+    report = RegressionHarness(_Ambiguous()).replay([_seed()])
+    assert report.results[0].status == INCONCLUSIVE
+    assert report.summary()["inconclusive"] == 1
+    assert report.passed is False
+
+
+def test_cli_regression_strict_fails_on_inconclusive(tmp_path, monkeypatch):
+    import agentforge.cli as climod
+    monkeypatch.setattr(climod, "RUNS_DIR", tmp_path)
+    # A defended mock leaves benign cases 'uncertain' -> inconclusive present.
+    assert climod.main(["regression", "--dry-run", "--mock-policy", "defended"]) == 0
+    assert climod.main(["regression", "--dry-run", "--mock-policy", "defended", "--strict"]) == 1

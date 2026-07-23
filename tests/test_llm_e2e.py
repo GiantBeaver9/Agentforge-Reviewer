@@ -123,3 +123,41 @@ def test_campaign_uses_llm_judge_and_records_cost(tmp_path):
     # The LLM Judge path records its cost as an event.
     assert any(e.get("type") == "cost" and e.get("component") == "judge_llm"
                for e in store.events())
+
+
+def test_independence_guard_refuses_same_model():
+    from agentforge.config import Config, ModelConfig, TargetConfig, BudgetConfig
+    same = ModelConfig(base_url="http://x/v1", model="same-model", api_key="")
+    cfg = Config(target=TargetConfig("http://t", "session", "u", "p", ""),
+                 redteam=same, judge=same,
+                 budget=BudgetConfig(2.0, 50, 6))
+    # Both LLM roles active + same model => collision reported.
+    assert cfg.check_judge_independence(True, True) is not None
+    # A deterministic side (one role off) => no collision.
+    assert cfg.check_judge_independence(True, False) is None
+
+
+def test_independence_ok_when_different_models():
+    from agentforge.config import Config, ModelConfig, TargetConfig, BudgetConfig
+    cfg = Config(target=TargetConfig("http://t", "session", "u", "p", ""),
+                 redteam=ModelConfig("http://r/v1", "llama-8b", ""),
+                 judge=ModelConfig("http://j/v1", "claude-sonnet", ""),
+                 budget=BudgetConfig(2.0, 50, 6))
+    assert cfg.check_judge_independence(True, True) is None
+
+
+def test_llm_judge_reports_real_cost_from_usage():
+    from agentforge.agents.llm import LlmJudge, OpenAICompatibleClient
+    class _HTTP:
+        def post(self, url, headers=None, json=None):
+            class R:
+                status_code = 200
+                def json(self):
+                    return {"choices": [{"message": {"content": '{"verdict":"failure"}'}}],
+                            "usage": {"prompt_tokens": 1000, "completion_tokens": 200}}
+            return R()
+    client = OpenAICompatibleClient(SimpleNamespace(base_url="http://x/v1", model="m", api_key=""),
+                                    http=_HTTP())
+    j = LlmJudge(client)
+    j.classify("attacker: x\ntarget: I can't.", "pinned only")
+    assert j.last_cost is not None and j.last_cost > 0    # billed from real tokens

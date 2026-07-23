@@ -1,0 +1,87 @@
+{
+  "note": "Reproducible load sample generated against a local loopback server (127.0.0.1) because the deployed target's egress is proxy-blocked in this sandbox. Shape + platform CPU/mem are real; absolute latency reflects the loopback server, not the co-pilot. Regenerate: see docs/evidence/README.md.",
+  "levels": [
+    {
+      "endpoint": "http://127.0.0.1:35273/",
+      "concurrency": 1,
+      "requests": 100,
+      "ok": 100,
+      "errors": 0,
+      "error_rate": 0.0,
+      "wall_s": 0.32,
+      "throughput_rps": 312.05,
+      "latency_ms": {
+        "min": 2.9,
+        "p50": 3.1,
+        "p90": 3.4,
+        "p95": 3.4,
+        "p99": 3.7,
+        "max": 5.3,
+        "mean": 3.2
+      }
+    },
+    {
+      "endpoint": "http://127.0.0.1:35273/",
+      "concurrency": 5,
+      "requests": 100,
+      "ok": 100,
+      "errors": 0,
+      "error_rate": 0.0,
+      "wall_s": 0.267,
+      "throughput_rps": 374.56,
+      "latency_ms": {
+        "min": 5.8,
+        "p50": 13.0,
+        "p90": 14.0,
+        "p95": 14.4,
+        "p99": 14.7,
+        "max": 14.8,
+        "mean": 12.9
+      }
+    },
+    {
+      "endpoint": "http://127.0.0.1:35273/",
+      "concurrency": 10,
+      "requests": 100,
+      "ok": 100,
+      "errors": 0,
+      "error_rate": 0.0,
+      "wall_s": 1.047,
+      "throughput_rps": 95.48,
+      "latency_ms": {
+        "min": 7.8,
+        "p50": 16.1,
+        "p90": 18.8,
+        "p95": 21.4,
+        "p99": 1014.6,
+        "max": 1024.9,
+        "mean": 56.3
+      }
+    },
+    {
+      "endpoint": "http://127.0.0.1:35273/",
+      "concurrency": 20,
+      "requests": 100,
+      "ok": 100,
+      "errors": 0,
+      "error_rate": 0.0,
+      "wall_s": 2.071,
+      "throughput_rps": 48.29,
+      "latency_ms": {
+        "min": 7.6,
+        "p50": 17.8,
+        "p90": 1032.2,
+        "p95": 1232.8,
+        "p99": 2056.5,
+        "max": 2058.9,
+        "mean": 204.2
+      }
+    }
+  ],
+  "platform_resource": {
+    "maxrss_mb": 32.9,
+    "cpu_user_s": 0.621,
+    "cpu_sys_s": 0.18,
+    "load_avg_1m": 0.08
+  }
+}

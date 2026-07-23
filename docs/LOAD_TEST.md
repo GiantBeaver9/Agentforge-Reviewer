@@ -7,6 +7,16 @@ characterization of the expensive LLM surface. Reproduce with:
 PYTHONPATH=src python -m agentforge.cli loadtest --n 100
 ```
 
+> **Committed artifact.** A machine-readable load sample — 4 concurrency levels ×
+> 100 requests, with **platform-side CPU/memory** — ships at
+> [`docs/evidence/loadtest_sample.json`](evidence/loadtest_sample.json). It was
+> generated against a **local loopback server** (the deployed target's egress is
+> proxy-blocked in the build sandbox), so its *shape* and the *platform resource*
+> numbers are real, while absolute latency reflects the loopback, not the
+> co-pilot. Regenerate against the live target from an egress-capable host with
+> `agentforge loadtest --n 100`. The prose numbers below are from prior live runs
+> (raw logs ephemeral); treat the committed sample as the reproducible artifact.
+
 ## Method (and why this surface)
 
 The load generator (`src/agentforge/loadtest.py`) fires 100 requests per

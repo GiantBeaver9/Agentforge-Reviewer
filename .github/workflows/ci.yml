@@ -33,6 +33,11 @@ jobs:
       # Regression gate: non-zero exit on any regressed case blocks the deploy.
       - name: Regression gate (mock)
         run: PYTHONPATH=src python -m agentforge.cli regression --dry-run --mock-policy defended
+      # Eval reproducibility: the offline suite must reproduce the committed
+      # baseline exactly (non-zero on any drift). Results are computed, not
+      # hand-authored, by a judge-INDEPENDENT invariant.
+      - name: Eval reproducibility (mock, judge-independent invariant)
+        run: PYTHONPATH=src python -m agentforge.cli eval --dry-run --mock-policy defended
 
   regression-slo:
     runs-on: ubuntu-latest

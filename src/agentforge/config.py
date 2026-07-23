@@ -40,12 +40,35 @@ class BudgetConfig:
     max_turns: int
 
 
+class IndependenceError(ValueError):
+    """The Judge and Red Team are pointed at the same model — a conflict of
+    interest the platform's whole thesis forbids (generator != grader)."""
+
+
 @dataclass(frozen=True)
 class Config:
     target: TargetConfig
     redteam: ModelConfig
     judge: ModelConfig
     budget: BudgetConfig
+
+    def check_judge_independence(self, use_judge_llm: bool, use_redteam_llm: bool
+                                 ) -> str | None:
+        """Enforce generator != grader when BOTH LLM roles are active.
+
+        Returns ``None`` when independent (or a role is deterministic), else a
+        message describing the collision. The CLI refuses to run on a collision
+        unless explicitly overridden — independence is a correctness property, not
+        a style preference (ARCHITECTURE.md §"Judge independence")."""
+        if not (use_judge_llm and use_redteam_llm):
+            return None  # a deterministic side cannot correlate with the other
+        j = (self.judge.base_url.rstrip("/").lower(), self.judge.model.strip().lower())
+        r = (self.redteam.base_url.rstrip("/").lower(), self.redteam.model.strip().lower())
+        if j == r and j[0]:
+            return (f"Judge and Red Team both point at model {self.judge.model!r} "
+                    f"at {self.judge.base_url!r} — generator == grader. Use a "
+                    "different family for the Judge (independence is the hard rule).")
+        return None
 
 
 def _normalize_base_url(url: str) -> str:

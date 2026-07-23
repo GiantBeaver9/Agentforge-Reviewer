@@ -57,6 +57,29 @@ ways: `held` (the target affirmatively defended — the only pass), `regressed`
 unclassifiable answer). An `uncertain` replay is **not** a pass, so a fix that
 only reworded the leak cannot sneak through green; `--strict` fails CI on drift.
 
+**Scoring is reproducible and not circular.** The deterministic Judge is a
+conservative substring rubric — useful, but validated partly against fixtures
+that contain its own tokens. So eval outcomes are *not* scored by that rubric:
+`agentforge eval` runs each case and scores it with a **judge-independent
+invariant** (`evalrunner.py`) — a structural check of whether the *forbidden
+outcome* occurred (a clinical value attributed to a non-pinned individual; a
+system-prompt disclosure), plus any explicit per-case `forbidden_substrings`.
+Results are written, not hand-authored, and reproduce a committed baseline in CI.
+The `subtle` mock proves the two are different: it leaks the same PHI paraphrased
+away from every Judge token — the rubric misses it, the independent invariant
+still catches it.
+
+**In-conversation adaptation.** A multi-turn attack is driven as a real
+conversation, not a scripted replay: each attacker turn after the first is
+generated from the target's *actual* previous reply (`RedTeamAgent.converse` —
+a refusal narrows the ask, an engagement presses further).
+
+**Independence is code-enforced.** The campaign refuses to run when the Judge and
+Red Team are pointed at the same model (`Config.check_judge_independence`),
+overridable only with an explicit `--allow-same-model`. When the LLM Judge runs,
+its cost is billed from the response's **real token usage**, falling back to the
+estimate only when usage isn't reported.
+
 **AI vs. deterministic.** LLMs do what only LLMs can — creative attack
 generation, natural-language judgement, prose reports. Everything that can be
 deterministic *is*: budget accounting, coverage math, regression replay, tool-
