@@ -5,6 +5,17 @@ Co-Pilot**, not just the offline mock. Raw run logs live under `runs/` (git-
 ignored); this file is the committed, PHI-free summary. No patient data was
 leaked — the target defended every attempt, so nothing sensitive appears here.
 
+> **Provenance, stated plainly.** The `camp-*` ids below are from prior **live**
+> sessions; their raw logs were ephemeral (`runs/` is git-ignored) and are **not
+> committed** in this repo, so they cannot be re-derived from the tree alone. A
+> committed, machine-readable trace of the *wire shape* (generated offline, PHI-
+> redacted) ships at [`docs/evidence/sample_campaign_trace.jsonl`](evidence/) so a
+> reviewer has something to grep. To attach a committed **live** trace, run the
+> campaign from an environment with egress + credentials and copy the redacted
+> `runs/<id>.observability.jsonl` into `docs/evidence/` (see that folder's README).
+> The build sandbox for this commit has egress proxy-blocked, so a fresh live run
+> could not be executed here.
+
 - **Target:** `https://abundant-art-production-d560.up.railway.app`
 - **Auth:** OpenEMR session (`admin`/`pass` on the dev deploy) + module CSRF
   token scraped from `doc.php?pid=1`.

@@ -105,6 +105,78 @@ class TargetMetadata(BaseModel):
     target_version: str | None = None
 
 
+class Budget(BaseModel):
+    max_attempts: int
+    max_usd: float
+    max_tokens: int | None = None
+
+
+class AttackCampaignDirective(BaseModel):
+    """Orchestrator -> Red Team. Validates against orchestrator_to_redteam.schema.json.
+
+    The typed model for the first boundary (parity with :class:`AttackAttempt`
+    and :class:`Verdict`), so the directive is producer-validated on ``to_wire``
+    and consumer-parseable via ``from_wire`` — not a schema file with no model.
+    """
+
+    directive_id: str
+    campaign_id: str
+    attack_category: AttackCategory
+    target_surface: TargetSurface
+    rationale: str
+    priority: int
+    budget: Budget
+    subcategory: str = ""
+    owasp_web: list[str] = Field(default_factory=list)
+    owasp_llm: list[str] = Field(default_factory=list)
+    seed_case_ids: list[str] | None = None
+    max_turns: int = 6
+    correlation_id: str = ""
+
+    def to_wire(self) -> dict[str, Any]:
+        msg: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "message_id": f"msg-{uuid4().hex[:8]}",
+            "correlation_id": self.correlation_id or self.campaign_id,
+            "type": "orchestrator_to_redteam",
+            "producer": "orchestrator",
+            "created_at": _now(),
+            "directive_id": self.directive_id,
+            "campaign_id": self.campaign_id,
+            "attack_category": self.attack_category.value,
+            "subcategory": self.subcategory,
+            "target_surface": self.target_surface.value,
+            "owasp_web": self.owasp_web,
+            "owasp_llm": self.owasp_llm,
+            "rationale": self.rationale,
+            "priority": self.priority,
+            "max_turns": self.max_turns,
+            "budget": self.budget.model_dump(exclude_none=True),
+        }
+        if self.seed_case_ids is not None:
+            msg["seed_case_ids"] = self.seed_case_ids
+        _validator("orchestrator_to_redteam.schema.json").validate(msg)
+        return msg
+
+    @classmethod
+    def from_wire(cls, msg: dict[str, Any]) -> "AttackCampaignDirective":
+        """Validate a wire directive against the contract and parse it (consumer)."""
+        _validator("orchestrator_to_redteam.schema.json").validate(msg)
+        b = msg["budget"]
+        return cls(
+            directive_id=msg["directive_id"], campaign_id=msg["campaign_id"],
+            attack_category=AttackCategory(msg["attack_category"]),
+            target_surface=TargetSurface(msg["target_surface"]),
+            rationale=msg["rationale"], priority=msg["priority"],
+            budget=Budget(max_attempts=b["max_attempts"], max_usd=b["max_usd"],
+                          max_tokens=b.get("max_tokens")),
+            subcategory=msg.get("subcategory", ""),
+            owasp_web=msg.get("owasp_web", []), owasp_llm=msg.get("owasp_llm", []),
+            seed_case_ids=msg.get("seed_case_ids"), max_turns=msg.get("max_turns", 6),
+            correlation_id=msg.get("correlation_id", ""),
+        )
+
+
 class AttackAttempt(BaseModel):
     """Red Team -> Judge. Validates against redteam_to_judge.schema.json."""
 

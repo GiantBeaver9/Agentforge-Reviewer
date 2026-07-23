@@ -119,3 +119,35 @@ def test_dedupe_keeps_highest_confidence():
     kept = dedupe_reports([r1, r2])
     assert len(kept) == 1
     assert kept[0].confidence == 0.99
+
+
+def _mk_report(severity, status):
+    from agentforge.agents.documentation import VulnerabilityReport
+    return VulnerabilityReport(
+        finding_id="AF-FIND-z", title="t", severity=severity, exploitability="easy",
+        attack_category="data_exfiltration", target_surface="chat", owasp_web=[],
+        owasp_llm=[], reproduction=["x"], expected_safe_behavior="e",
+        observed_behavior="o", impact="i", recommendation="r", status=status,
+        verdict_id="v", attempt_id="a", confidence=0.9, rubric_version="1.0.0",
+        correlation_id="c")
+
+
+def test_publish_gate_blocks_critical_without_approver():
+    from agentforge.agents.documentation import (ApprovalRequired, DocumentationAgent,
+                                                 PENDING_HUMAN, PUBLISHED)
+    doc = DocumentationAgent()
+    r = _mk_report("critical", PENDING_HUMAN)
+    import pytest as _pytest
+    with _pytest.raises(ApprovalRequired):
+        doc.publish(r)                       # no approver -> refused
+    assert r.status == PENDING_HUMAN         # not published
+    doc.publish(r, approver="alice")
+    assert r.status == PUBLISHED and r.approved_by == "alice"
+
+
+def test_publish_auto_publishes_noncritical_draft():
+    from agentforge.agents.documentation import DocumentationAgent, DRAFT, PUBLISHED
+    doc = DocumentationAgent()
+    r = _mk_report("high", DRAFT)
+    doc.publish(r)                           # draft publishes with no approver
+    assert r.status == PUBLISHED and r.approved_by is None

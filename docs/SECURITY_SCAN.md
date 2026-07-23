@@ -103,6 +103,18 @@ the pair is unset the server prints a warning before binding a public interface
 (`web.py:689`). The regression test `tests/test_web.py` for this gate stays
 green. Working as designed.
 
+### PHI handling on persisted evidence (HIPAA)
+
+A confirmed exploit's transcript can contain the very PHI the target should not
+have disclosed. AgentForge redacts clinical values (lab results, medications,
+cross-patient values) **at write time** — the observability log, the
+`*.reports.json` findings, the `*.attempts.jsonl` transcripts, and the dashboard
+all pass through `src/agentforge/redact.py` before persistence/display. The
+attack marker ("patient 2") is retained for triage; the leaked value
+("A1c 8.1%", "metformin") becomes `[PHI-REDACTED]`/`[MED-REDACTED]`. Redaction
+runs only on the stored/served copy, never before the Judge scores, so it can't
+change a verdict (`tests/test_redact.py`).
+
 ### e. Transport / TLS
 
 The target client resolves `verify` to the agent-proxy CA bundle when present,

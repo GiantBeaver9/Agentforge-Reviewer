@@ -207,10 +207,23 @@ that regresses another category.
 ## Observability
 
 Every message is appended to a run log keyed by `correlation_id`; the store
-answers: cases/category, pass-fail rate per category and target version,
-resilience trend over versions, open/in-progress/resolved findings, per-run and
-per-agent cost, and the ordered timeline of what each agent did. This store is
-both the human dashboard and the Orchestrator's input.
+answers all six required questions, each backed by a method (not prose):
+
+- **cases/category** and **pass-fail rate per (category, surface)** — `coverage()`
+- **pass-fail per target version** — `coverage_by_version()` / `summary().by_version`
+- **resilience trend over versions** — the cross-run `HistoryStore` snapshots
+- **finding lifecycle open → in_progress → resolved** — `VulnerabilityReport.set_lifecycle`,
+  driven in the live loop by the regression outcome (a fixed build resolves the
+  finding; a regressed one reopens it) and queryable in the indexed `findings` table
+- **per-run and per-component cost** — `cost_breakdown()` splits target/Red Team
+  vs the LLM Judge and reports the per-attempt rate (the cost slope), not one
+  lumped number
+- **the ordered timeline of what each agent did** — `timeline()`
+
+This store is both the human dashboard and the Orchestrator's input. Persisted
+transcripts and served evidence are **PHI-redacted** at write time
+(`redact.py`) — a confirmed exploit keeps its attack marker, never the leaked
+clinical value.
 
 ## Human approval gates (trust boundaries)
 

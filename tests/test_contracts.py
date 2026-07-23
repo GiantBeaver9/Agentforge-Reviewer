@@ -188,3 +188,37 @@ def test_eval_cases_conform():
             # data-quality invariant: unique ids across the whole suite
             assert case["id"] not in seen_ids, f"duplicate eval id {case['id']}"
             seen_ids.add(case["id"])
+
+
+# ---- 5. orchestrator->redteam boundary is two-sided (model + consumer check) --
+def test_directive_model_roundtrips_and_validates():
+    from agentforge.contracts.models import AttackCampaignDirective, Budget
+    d = AttackCampaignDirective(
+        directive_id="dir-1", campaign_id="camp-1", attack_category="prompt_injection",
+        target_surface="chat", rationale="coverage_gap", priority=4,
+        budget=Budget(max_attempts=6, max_usd=1.0))
+    wire = d.to_wire()                       # producer-side validation
+    Draft202012Validator(_load(CONTRACTS / "orchestrator_to_redteam.schema.json")).validate(wire)
+    back = AttackCampaignDirective.from_wire(wire)  # consumer-side parse+validate
+    assert back.attack_category.value == "prompt_injection"
+    assert back.budget.max_attempts == 6
+
+
+def test_redteam_rejects_malformed_directive():
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "src"))
+    from agentforge.agents.redteam import RedTeamAgent, SeedCase
+    from agentforge.agents.orchestrator import OrchestratorAgent
+    from agentforge.observability.store import ObservabilityStore
+    from agentforge.contracts.models import ContractViolation
+    from agentforge.target.client import MockTargetClient
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        store = ObservabilityStore(Path(td) / "r.jsonl")
+        directive = OrchestratorAgent(store).next_directive(max_attempts=4)
+    directive["budget"] = {"max_usd": 1.0}    # drop required budget.max_attempts
+    seed = SeedCase.from_eval(json.loads(
+        (ROOT / "evals/cases/data_exfiltration.json").read_text())[0])
+    with pytest.raises(ContractViolation):
+        RedTeamAgent(MockTargetClient("defended")).run_directive(directive, [seed])

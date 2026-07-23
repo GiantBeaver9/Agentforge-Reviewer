@@ -194,6 +194,36 @@ class ObservabilityStore:
             total += float(e.get("cost_usd") or 0.0)
         return round(total, 6)
 
+    def cost_breakdown(self) -> dict[str, Any]:
+        """Cost split by component, plus the per-attempt rate (the cost slope).
+
+        Answers "cost per agent/component", not one lumped number: the target/Red
+        Team per-attempt spend comes from each attempt's ``cost_usd``; the Judge's
+        LLM spend from the ``cost`` events it emits (``component=judge_llm``). The
+        per-attempt rate is the marginal cost of one more attempt — the slope a
+        capacity plan multiplies out.
+        """
+        by_component: dict[str, float] = {}
+        # Target + Red Team generation cost is folded into each attempt estimate.
+        target = sum(float((a.get("target_metadata") or {}).get("cost_usd") or 0.0)
+                     for a in self._by_type(ATTEMPT))
+        if target:
+            by_component["target_and_redteam"] = round(target, 6)
+        # Standalone cost events (e.g. the LLM Judge) carry their own component.
+        for e in self.events():
+            c = e.get("cost_usd")
+            if c and e.get("type") == "cost":
+                comp = e.get("component", "other")
+                by_component[comp] = round(by_component.get(comp, 0.0) + float(c), 6)
+        total = round(sum(by_component.values()), 6)
+        attempts = self.attempt_count()
+        return {
+            "total_usd": total,
+            "by_component": by_component,
+            "attempts": attempts,
+            "per_attempt_usd": round(total / attempts, 6) if attempts else 0.0,
+        }
+
     def attempt_count(self) -> int:
         return len(self._by_type(ATTEMPT))
 
@@ -218,8 +248,10 @@ class ObservabilityStore:
         ``attack_source``/``decision_path`` default to ``deterministic`` for
         older logs written before those fields existed.
         """
+        from ..redact import redact_phi  # local import to avoid a package cycle
+
         def _clip(s: str) -> str:
-            s = s or ""
+            s = redact_phi(s or "")  # defense-in-depth: scrub PHI even from raw logs
             return s if len(s) <= clip else s[:clip] + "…"
 
         attempts = []
@@ -260,6 +292,7 @@ class ObservabilityStore:
             "verdicts": sum(c.verdicts for c in cov.values()),
             "open_findings": len(self.open_findings()),
             "cost_usd": self.cost_usd(),
+            "cost_breakdown": self.cost_breakdown(),
             "coverage": [
                 {
                     "attack_category": c.attack_category,

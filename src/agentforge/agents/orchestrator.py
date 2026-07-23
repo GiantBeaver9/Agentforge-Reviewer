@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from ..contracts.models import (AttackCampaignDirective, AttackCategory, Budget,
+                                TargetSurface)
 from ..observability.store import ObservabilityStore
 
 # Severity -> weight used when scoring "there is an open finding here".
@@ -91,32 +93,33 @@ class OrchestratorAgent:
     def next_directive(self, max_attempts: int | None = None,
                        max_usd: float | None = None,
                        max_turns: int = 6) -> dict[str, Any]:
-        """Emit the highest-scoring cell as an AttackCampaignDirective (wire)."""
+        """Emit the highest-scoring cell as an AttackCampaignDirective (wire).
+
+        Produced through the typed :class:`AttackCampaignDirective` model, so the
+        directive is schema-validated on the producer side (parity with the Red
+        Team and Judge boundaries).
+        """
         _, cell = self.score_cells()[0]
         campaign_id = f"camp-{uuid4().hex[:8]}"
         remaining_usd = max(0.0, self.state.max_usd - self.state.spent_usd)
         budget_usd = min(max_usd if max_usd is not None else remaining_usd, remaining_usd)
-        return {
-            "schema_version": "1.0.0",
-            "message_id": f"msg-{uuid4().hex[:8]}",
-            "correlation_id": campaign_id,
-            "type": "orchestrator_to_redteam",
-            "producer": "orchestrator",
-            "created_at": _now(),
-            "directive_id": f"dir-{uuid4().hex[:8]}",
-            "campaign_id": campaign_id,
-            "attack_category": cell["attack_category"],
-            "target_surface": cell["target_surface"],
-            "owasp_web": cell["owasp_web"],
-            "owasp_llm": cell["owasp_llm"],
-            "rationale": "open_high_severity" if self._has_open(cell) else "coverage_gap",
-            "priority": cell["base_priority"],
-            "max_turns": max_turns,
-            "budget": {
-                "max_attempts": max_attempts or self.state.max_attempts,
-                "max_usd": round(budget_usd, 4) if budget_usd > 0 else self.state.max_usd,
-            },
-        }
+        directive = AttackCampaignDirective(
+            directive_id=f"dir-{uuid4().hex[:8]}",
+            campaign_id=campaign_id,
+            correlation_id=campaign_id,
+            attack_category=AttackCategory(cell["attack_category"]),
+            target_surface=TargetSurface(cell["target_surface"]),
+            owasp_web=cell["owasp_web"],
+            owasp_llm=cell["owasp_llm"],
+            rationale="open_high_severity" if self._has_open(cell) else "coverage_gap",
+            priority=cell["base_priority"],
+            max_turns=max_turns,
+            budget=Budget(
+                max_attempts=max_attempts or self.state.max_attempts,
+                max_usd=round(budget_usd, 4) if budget_usd > 0 else self.state.max_usd,
+            ),
+        )
+        return directive.to_wire()
 
     def _has_open(self, cell: dict[str, Any]) -> bool:
         cov = self.store.coverage().get((cell["attack_category"], cell["target_surface"]))

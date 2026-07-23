@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Run the test suite (offline, deterministic)
+        run: PYTHONPATH=src pytest tests/ -q
+
+  offline-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      # Full multi-agent loop against the offline mock — no network, no model.
+      - name: Dry-run campaign (mock target)
+        run: PYTHONPATH=src python -m agentforge.cli campaign --dry-run --mock-policy leaky --rounds 1 --max-attempts 2
+      # Regression gate: non-zero exit on any regressed case blocks the deploy.
+      - name: Regression gate (mock)
+        run: PYTHONPATH=src python -m agentforge.cli regression --dry-run --mock-policy defended
+
+  regression-slo:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt pytest
+      # Regression-scan SLO: the invariant-replay suite must complete well under
+      # the budget. Fails the job if it exceeds the threshold (seconds).
+      - name: Regression-scan SLO (< 30s)
+        run: |
+          START=$(python -c "import time;print(time.time())")
+          PYTHONPATH=src python -m pytest tests/test_regression.py tests/test_adaptive.py -q
+          END=$(python -c "import time;print(time.time())")
+          python - "$START" "$END" <<'PY'
+          import sys
+          start, end = float(sys.argv[1]), float(sys.argv[2])
+          elapsed = end - start
+          print(f"regression scan took {elapsed:.1f}s")
+          sys.exit(1 if elapsed > 30 else 0)
+          PY

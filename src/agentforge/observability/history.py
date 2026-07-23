@@ -37,11 +37,34 @@ def _now() -> str:
 # an existing DB is upgraded in place rather than silently drifting. ALTER TABLE
 # ADD COLUMN is valid in both SQLite and Postgres, so one list covers both
 # backends. See docs/migrations/README.md.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _BASE_VERSION = 1
-_MIGRATIONS: list[tuple[int, str]] = [
+# Each migration is (to_version, (ddl, ...)) — a tuple of statements applied in
+# order, once, tracked in schema_meta. ADD COLUMN / CREATE INDEX / CREATE TABLE
+# are valid in both SQLite and Postgres.
+_MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
     # v1 -> v2: per-version pass/fail breakdown needs the target's deploy id.
-    (2, "ALTER TABLE campaign_snapshots ADD COLUMN target_version TEXT"),
+    (2, ("ALTER TABLE campaign_snapshots ADD COLUMN target_version TEXT",)),
+    # v2 -> v3: findings get real, INDEXED columns (severity, attack_category)
+    # instead of being buried in a JSON blob, so a triage query is index-backed.
+    (3, (
+        "CREATE TABLE IF NOT EXISTS findings ("
+        " finding_id TEXT PRIMARY KEY,"
+        " run_id TEXT NOT NULL,"
+        " severity TEXT NOT NULL,"
+        " attack_category TEXT NOT NULL,"
+        " target_surface TEXT,"
+        " status TEXT,"
+        " lifecycle TEXT,"
+        " confidence DOUBLE PRECISION,"
+        " correlation_id TEXT,"
+        " recorded_at TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_category ON findings(attack_category)",
+        "CREATE INDEX IF NOT EXISTS idx_findings_run ON findings(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_recorded ON campaign_snapshots(recorded_at)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_version ON campaign_snapshots(target_version)",
+    )),
 ]
 
 
@@ -124,15 +147,15 @@ class HistoryStore:
                              [current])
             else:
                 current = int(row[0])
-            for to_version, ddl in _MIGRATIONS:
+            for to_version, statements in _MIGRATIONS:
                 if to_version > current:
-                    try:
-                        conn.execute(ddl)
-                    except Exception:  # noqa: BLE001 — column may already exist
-                        # Idempotent: an ADD COLUMN that already ran (a DB migrated
-                        # out of band) is not an error; the version bump below
-                        # records that we're now at this level.
-                        pass
+                    for ddl in statements:
+                        try:
+                            conn.execute(ddl)
+                        except Exception:  # noqa: BLE001 — column/table may exist
+                            # Idempotent: a statement that already ran (a DB
+                            # migrated out of band) is not an error.
+                            pass
                     current = to_version
             conn.execute(f"UPDATE schema_meta SET version = {self._ph}", [current])
             conn.commit()
@@ -187,6 +210,103 @@ class HistoryStore:
         finally:
             conn.close()
         return row
+
+    def record_findings(self, run_id: str, reports: list[Any],
+                        recorded_at: str | None = None) -> int:
+        """Persist findings into the indexed ``findings`` table (upsert on id).
+
+        ``reports`` are :class:`VulnerabilityReport`-like objects (anything with
+        the finding fields) or their ``to_dict()`` output. Returns the count
+        written. Severity and attack_category are real columns, so a triage query
+        (``findings(severity="critical")``) is index-backed, not a JSON scan.
+        """
+        ts = recorded_at or _now()
+        rows = []
+        for r in reports:
+            d = r.to_dict() if hasattr(r, "to_dict") else dict(r)
+            rows.append((d["finding_id"], run_id, d["severity"], d["attack_category"],
+                         d.get("target_surface"), d.get("status"), d.get("lifecycle"),
+                         float(d.get("confidence", 0.0) or 0.0),
+                         d.get("correlation_id"), ts))
+        if not rows:
+            return 0
+        cols = ("finding_id", "run_id", "severity", "attack_category", "target_surface",
+                "status", "lifecycle", "confidence", "correlation_id", "recorded_at")
+        ph = ", ".join(self._ph for _ in cols)
+        sql = (f"INSERT INTO findings ({', '.join(cols)}) VALUES ({ph}) "
+               f"ON CONFLICT (finding_id) DO UPDATE SET "
+               + ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != "finding_id"))
+        conn = self._connect()
+        try:
+            for row in rows:
+                conn.execute(sql, list(row))
+            conn.commit()
+        finally:
+            conn.close()
+        return len(rows)
+
+    def findings(self, severity: str | None = None,
+                 attack_category: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        """Query findings, optionally filtered by severity/category (index-backed)."""
+        where, params = [], []
+        if severity:
+            where.append(f"severity = {self._ph}")
+            params.append(severity)
+        if attack_category:
+            where.append(f"attack_category = {self._ph}")
+            params.append(attack_category)
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        q = (f"SELECT finding_id, run_id, severity, attack_category, target_surface,"
+             f" status, lifecycle, confidence, correlation_id, recorded_at FROM findings"
+             f"{clause} ORDER BY recorded_at DESC LIMIT {self._ph}")
+        conn = self._connect()
+        try:
+            cur = conn.execute(q, params + [int(limit)])
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+        keys = ("finding_id", "run_id", "severity", "attack_category", "target_surface",
+                "status", "lifecycle", "confidence", "correlation_id", "recorded_at")
+        return [dict(zip(keys, r)) for r in rows]
+
+    def set_lifecycle(self, finding_id: str, new_state: str) -> str:
+        """Transition a persisted finding's lifecycle, validating the move.
+
+        Uses the same open -> in_progress -> resolved (+ reopen) rules as the
+        report model, so an illegal transition is rejected here too.
+        """
+        from ..agents.documentation import _LIFECYCLE_TRANSITIONS
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                f"SELECT lifecycle FROM findings WHERE finding_id = {self._ph}", [finding_id])
+            row = cur.fetchone()
+            if row is None:
+                raise KeyError(f"no finding {finding_id}")
+            current = row[0] or "open"
+            if new_state != current and new_state not in _LIFECYCLE_TRANSITIONS.get(current, set()):
+                raise ValueError(f"illegal lifecycle transition {current!r} -> {new_state!r}")
+            conn.execute(
+                f"UPDATE findings SET lifecycle = {self._ph} WHERE finding_id = {self._ph}",
+                [new_state, finding_id])
+            conn.commit()
+        finally:
+            conn.close()
+        return new_state
+
+    def indexes(self) -> list[str]:
+        """Names of the indexes present (for verification/tests)."""
+        conn = self._connect()
+        try:
+            if self.backend == "postgres":
+                cur = conn.execute("SELECT indexname FROM pg_indexes WHERE tablename IN "
+                                   "('findings','campaign_snapshots')")
+            else:
+                cur = conn.execute("SELECT name FROM sqlite_master WHERE type='index' "
+                                   "AND name LIKE 'idx_%'")
+            return sorted(r[0] for r in cur.fetchall())
+        finally:
+            conn.close()
 
     # ---- read --------------------------------------------------------------
     def snapshots(self, limit: int = 100) -> list[dict[str, Any]]:

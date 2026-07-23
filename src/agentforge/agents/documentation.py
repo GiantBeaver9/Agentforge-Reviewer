@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..redact import redact_evidence, redact_phi
+
 # Report *approval* status (publish workflow).
 DRAFT = "draft"
 PENDING_HUMAN = "pending_human_approval"
@@ -78,6 +80,15 @@ class DataQualityError(ValueError):
     """A report failed a data-quality invariant and must not be persisted."""
 
 
+class ApprovalRequired(PermissionError):
+    """A critical finding cannot be published without an explicit human approver.
+
+    This is the enforcement behind the human-approval gate: it is raised by
+    :meth:`DocumentationAgent.publish` — not merely a status label — so a
+    critical report can never reach ``PUBLISHED`` without a named approver.
+    """
+
+
 @dataclass
 class VulnerabilityReport:
     finding_id: str
@@ -101,6 +112,7 @@ class VulnerabilityReport:
     correlation_id: str
     evidence: list[dict[str, Any]] = field(default_factory=list)
     lifecycle: str = OPEN  # remediation state: open -> in_progress -> resolved
+    approved_by: str | None = None  # set when a human approved a critical publish
 
     def set_lifecycle(self, new_state: str) -> None:
         """Transition the finding's remediation state, rejecting illegal moves
@@ -124,6 +136,7 @@ class VulnerabilityReport:
             "owasp_web": self.owasp_web,
             "owasp_llm": self.owasp_llm,
             "reproduction": self.reproduction,
+            "approved_by": self.approved_by,
             "expected_safe_behavior": self.expected_safe_behavior,
             "observed_behavior": self.observed_behavior,
             "impact": self.impact,
@@ -183,7 +196,9 @@ class DocumentationAgent:
             raise DataQualityError("attempt has no attacker turns to reproduce")
 
         target_turns = [t["content"] for t in attempt["turns"] if t["role"] == "target"]
-        observed = target_turns[-1] if target_turns else "(no target response captured)"
+        # Redact PHI from the observed behavior before it is persisted: the finding
+        # keeps its attack marker, the leaked clinical value does not land on disk.
+        observed = redact_phi(target_turns[-1]) if target_turns else "(no target response captured)"
 
         category = attempt["attack_category"]
         severity = verdict["severity"]
@@ -221,9 +236,29 @@ class DocumentationAgent:
             confidence=float(verdict.get("confidence", 0.0)),
             rubric_version=verdict.get("rubric_version", "unknown"),
             correlation_id=verdict.get("correlation_id", attempt.get("correlation_id", "")),
-            evidence=verdict.get("evidence", []),
+            evidence=redact_evidence(verdict.get("evidence", [])),
         )
         self._validate(report)
+        return report
+
+    def publish(self, report: VulnerabilityReport,
+                approver: str | None = None) -> VulnerabilityReport:
+        """Move a report to PUBLISHED, enforcing the human-approval gate.
+
+        The gate is real, not a label: a report in ``PENDING_HUMAN`` (every
+        critical finding) is refused with :class:`ApprovalRequired` unless a
+        non-empty ``approver`` is supplied; a ``DRAFT`` (non-critical) publishes
+        automatically. Idempotent on an already-published report.
+        """
+        if report.status == PUBLISHED:
+            return report
+        if report.status == PENDING_HUMAN and not approver:
+            raise ApprovalRequired(
+                f"{report.finding_id} ({report.severity}) requires human approval "
+                "before publish; call publish(report, approver=<name>)")
+        if approver:
+            report.approved_by = approver
+        report.status = PUBLISHED
         return report
 
     def regression_case(self, report: VulnerabilityReport) -> dict[str, Any]:

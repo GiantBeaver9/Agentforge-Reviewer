@@ -35,6 +35,10 @@ SQLite and Postgres, so one migration list covers both backends.
 |---|---|
 | v1 | baseline `campaign_snapshots` (totals + per-category pass rates) |
 | v2 | `+ target_version` column — so trends can be sliced per deploy |
+| v3 | `findings` table with **real indexed columns** (`severity`, `attack_category`, `run_id`) + indexes on `campaign_snapshots(recorded_at, target_version)` — triage queries are index-backed, not JSON scans |
+
+Each migration is `(to_version, (ddl, ...))` — a tuple of statements applied in
+order — so one version can add a table plus its indexes atomically.
 
 **Adding a field (the worked recipe):**
 1. Append `(N, "ALTER TABLE campaign_snapshots ADD COLUMN <name> <type>")` to

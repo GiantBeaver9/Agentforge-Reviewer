@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import costs
-from .contracts.models import ContractViolation, validate_message
+from .redact import redact_attempt, redact_verdict
+from .contracts.models import AgentError, ContractViolation, validate_message
 from .agents.documentation import (DocumentationAgent, DataQualityError,
                                    VulnerabilityReport, dedupe_reports)
 from .agents.judge import JudgeAgent
@@ -127,6 +128,13 @@ def run_campaign(
             continue
 
         base_attempts = redteam.run_directive(directive, cell_seeds)
+        if not base_attempts:
+            # The Red Team returned nothing from a non-empty cell — the target was
+            # unreachable this round (run_directive drops attempts on
+            # TargetUnreachable). Emit the typed error instead of failing silently.
+            _emit_error(store, error_code="target_unreachable", producer="redteam",
+                        message="target unreachable: no attempts completed this round",
+                        correlation_id=directive["campaign_id"], retryable=True)
 
         # Feedback loop: process each attempt, and when the Judge reports a
         # partial/success, queue an autonomous refinement fan-out off that
@@ -145,17 +153,27 @@ def run_campaign(
             try:
                 validate_message(attempt)
             except ContractViolation as exc:
-                store.record(_invalid_message_event(attempt, str(exc)))
+                _emit_error(store, error_code="invalid_message", producer="judge",
+                            message=f"rejected malformed attempt on receipt: {str(exc)[:180]}",
+                            correlation_id=attempt.get("correlation_id", "unknown"))
                 continue
-            store.record(attempt)
+            # Persist a PHI-redacted copy; adjudication below uses the raw
+            # in-memory object, so redaction never changes a verdict.
+            store.record(redact_attempt(attempt))
             result.attempts.append(attempt)
             round_attempts.append(attempt)
 
             verdict = validate_message(judge.judge(attempt).to_wire())
-            store.record(verdict)
+            store.record(redact_verdict(verdict))
             result.verdicts.append(verdict)
             if verdict.get("decision_path") == "llm":
                 _record_judge_cost(store, attempt, verdict)
+            if getattr(judge, "last_llm_error", False):
+                # LLM refinement was attempted but failed; the deterministic
+                # rubric produced this verdict. Surface it as a typed error.
+                _emit_error(store, error_code="judge_timeout", producer="judge",
+                            message="LLM judge refinement failed; used deterministic rubric",
+                            correlation_id=verdict.get("correlation_id", ""), retryable=True)
             if verdict.get("escalate_to_human"):
                 _record_escalation(store, attempt, verdict)
 
@@ -192,14 +210,10 @@ def run_campaign(
         orchestrator.account(round_attempts, new_successes=new_successes)
         version = _observed_version(round_attempts)
         if orchestrator.target_changed(version):
-            store.record({
-                "schema_version": "1.0.0", "type": "error", "producer": "orchestrator",
-                "message_id": "regen", "correlation_id": directive["campaign_id"],
-                "created_at": directive["created_at"],
-                "error_code": "regression_detected",
-                "message": f"target version changed to {version}; running regression",
-                "retryable": False,
-            })
+            _emit_error(store, error_code="regression_detected", producer="orchestrator",
+                        message=f"target version changed to {version}; running regression",
+                        correlation_id=directive["campaign_id"],
+                        details={"target_version": version})
             # Actually run the harness now (previously only signaled): replay the
             # regression suite (cross-category) against the new build before any
             # further exploration spends budget on it — INCLUDING the exploits
@@ -209,9 +223,21 @@ def run_campaign(
             result.regression = _run_regression(
                 target, judge, pinned_pid, regression_cases + discovered, seeds,
                 store, directive["campaign_id"])
+            # Drive the vuln lifecycle from the replay: a finding that no longer
+            # reproduces on the new build is resolved; one that regressed reopens.
+            _apply_regression_lifecycle(result, store)
 
         decision = orchestrator.halt_check()
         if decision.halt:
+            # Surface the halt as a typed, schema-validated error on the wire —
+            # budget_exceeded / no_findings_in_window are real failure modes, not
+            # just an internal dataclass.
+            if decision.reason in ("budget_exceeded", "no_findings_in_window"):
+                _emit_error(store, error_code=decision.reason, producer="orchestrator",
+                            message=f"campaign halted: {decision.reason}",
+                            correlation_id=directive["campaign_id"],
+                            details={"attempts": orchestrator.state.attempts,
+                                     "spent_usd": round(orchestrator.state.spent_usd, 6)})
             result.halt = decision
             break
 
@@ -219,6 +245,12 @@ def run_campaign(
     # cell) before the reports are persisted — enforce the dedupe the review
     # noted was implemented but never called in the running campaign.
     result.reports = dedupe_reports(result.reports)
+    # Human-approval gate, enforced (not just labeled): non-critical DRAFT
+    # findings auto-publish; every critical stays PENDING_HUMAN and is genuinely
+    # un-published until a named human approves it (`publish` CLI / .publish()).
+    for r in result.reports:
+        if r.status == "draft":
+            documentation.publish(r)
     result.halt = result.halt or orchestrator.halt_check()
     return result
 
@@ -291,15 +323,11 @@ def _run_drift_gate(judge: JudgeAgent, ground_truth: list[dict[str, Any]],
         "passed": report["passed"], "mismatches": report["mismatches"],
     })
     if not report["passed"]:
-        store.record({
-            "schema_version": "1.0.0", "type": "error", "producer": "judge",
-            "message_id": "drift-fail", "correlation_id": "drift-gate",
-            "created_at": _now(), "error_code": "invalid_message",
-            "message": (f"Judge drift gate FAILED: {len(report['mismatches'])} of "
-                        f"{report['total']} labeled cases mislabeled by rubric "
-                        f"{report['rubric_version']}"),
-            "retryable": False,
-        })
+        _emit_error(store, error_code="invalid_message", producer="judge",
+                    message=(f"Judge drift gate FAILED: {len(report['mismatches'])} of "
+                             f"{report['total']} labeled cases mislabeled by rubric "
+                             f"{report['rubric_version']}"),
+                    correlation_id="drift-gate")
     return report
 
 
@@ -321,14 +349,54 @@ def _run_regression(target: TargetClient, judge: JudgeAgent, pinned_pid: int,
     return report
 
 
-def _invalid_message_event(attempt: dict[str, Any], detail: str) -> dict[str, Any]:
-    return {
-        "schema_version": "1.0.0", "type": "error", "producer": "judge",
-        "message_id": "badmsg", "correlation_id": attempt.get("correlation_id", "unknown"),
-        "created_at": _now(), "error_code": "invalid_message",
-        "message": f"rejected malformed attempt on receipt: {detail[:180]}",
-        "retryable": False,
-    }
+def _emit_error(store: ObservabilityStore, *, error_code: str, producer: str,
+                message: str, correlation_id: str, retryable: bool = False,
+                details: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Emit a typed, schema-validated AgentError on the wire and record it.
+
+    Goes through :class:`AgentError.to_wire`, so every error the pipeline emits is
+    validated against ``contracts/v1/errors.schema.json`` at runtime — not a raw
+    dict that merely resembles the schema.
+    """
+    msg = AgentError(
+        error_code=error_code, producer=producer, message=message,
+        retryable=retryable, details=details, correlation_id=correlation_id,
+    ).to_wire()
+    store.record(msg)
+    return msg
+
+
+def _apply_regression_lifecycle(result: CampaignResult, store: ObservabilityStore) -> None:
+    """Transition finding lifecycles from the regression replay outcome.
+
+    Matches each replayed case back to its finding (case id == finding_id) and
+    moves it: ``held`` (the exploit no longer reproduces) -> ``resolved``;
+    ``regressed`` (it came back) -> ``open``. Records the transition as an event
+    so the change is auditable.
+    """
+    if result.regression is None:
+        return
+    by_id = {r.finding_id: r for r in result.reports}
+    for res in result.regression.results:
+        rep = by_id.get(res.case_id)
+        if rep is None:
+            continue
+        target_state = None
+        if res.status == "held" and rep.lifecycle != "resolved":
+            target_state = "resolved"
+        elif res.status == "regressed" and rep.lifecycle == "resolved":
+            target_state = "open"
+        if target_state:
+            try:
+                rep.set_lifecycle(target_state)
+            except ValueError:
+                continue
+            store.record({
+                "schema_version": "1.0.0", "type": "lifecycle", "producer": "documentation",
+                "message_id": "lc", "correlation_id": rep.correlation_id,
+                "created_at": _now(), "finding_id": rep.finding_id,
+                "lifecycle": target_state, "reason": f"regression:{res.status}",
+            })
 
 
 def _seed_from_attempt(attempt: dict[str, Any]) -> SeedCase:
@@ -414,12 +482,12 @@ def build_langgraph(*, target, seeds, store, **kw):  # pragma: no cover - option
         d = state["directive"]
         cell_seeds = by_cell.get((d["attack_category"], d["target_surface"]), [])
         attempts = redteam.run_directive(d, cell_seeds)
-        store.record_all(attempts)
+        store.record_all(redact_attempt(a) for a in attempts)
         return {**state, "attempts": attempts}
 
     def adjudicate(state: dict) -> dict:
         verdicts = [judge.judge(a).to_wire() for a in state.get("attempts", [])]
-        store.record_all(verdicts)
+        store.record_all(redact_verdict(v) for v in verdicts)
         return {**state, "verdicts": verdicts}
 
     def document(state: dict) -> dict:

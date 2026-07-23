@@ -113,3 +113,40 @@ def test_migration_upgrades_a_v1_database_in_place(tmp_path):
     # And the new column is usable post-migration.
     store.record_snapshot("new-1", _summary(6, 4, 4), target_version="v2")
     assert {s["run_id"] for s in store.snapshots()} == {"old-1", "new-1"}
+
+
+def test_findings_table_indexed_query(tmp_path):
+    store = HistoryStore(url="", sqlite_path=tmp_path / "h.db")
+    reports = [
+        {"finding_id": "AF-1", "severity": "critical", "attack_category": "data_exfiltration",
+         "target_surface": "chat", "status": "pending_human_approval", "lifecycle": "open",
+         "confidence": 0.9, "correlation_id": "c1"},
+        {"finding_id": "AF-2", "severity": "high", "attack_category": "prompt_injection",
+         "target_surface": "chat", "status": "published", "lifecycle": "open",
+         "confidence": 0.8, "correlation_id": "c1"},
+    ]
+    assert store.record_findings("run-1", reports) == 2
+    crit = store.findings(severity="critical")
+    assert [f["finding_id"] for f in crit] == ["AF-1"]
+    pi = store.findings(attack_category="prompt_injection")
+    assert [f["finding_id"] for f in pi] == ["AF-2"]
+    assert len(store.findings()) == 2
+
+
+def test_indexes_exist_on_findings_and_snapshots(tmp_path):
+    store = HistoryStore(url="", sqlite_path=tmp_path / "h.db")
+    idx = store.indexes()
+    assert "idx_findings_severity" in idx
+    assert "idx_findings_category" in idx
+    assert "idx_snapshots_recorded" in idx
+
+
+def test_findings_upsert_is_idempotent(tmp_path):
+    store = HistoryStore(url="", sqlite_path=tmp_path / "h.db")
+    r = [{"finding_id": "AF-9", "severity": "low", "attack_category": "tool_misuse",
+          "confidence": 0.5}]
+    store.record_findings("run-1", r)
+    r[0]["severity"] = "high"
+    store.record_findings("run-1", r)                 # re-record
+    got = store.findings()
+    assert len(got) == 1 and got[0]["severity"] == "high"

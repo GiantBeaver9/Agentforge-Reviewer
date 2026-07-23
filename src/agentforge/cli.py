@@ -5,6 +5,7 @@ Commands:
     campaign   run the FULL loop: Orchestrator -> Red Team -> Judge -> Documentation
     judge      (re)judge a captured attempts file offline, emit verdicts
     regression replay the regression suite (invariant-based); non-zero on a regression
+    publish    publish a finding, enforcing the human-approval gate on criticals
     dashboard  print the observability rollup for a run log
 
 Examples:
@@ -162,15 +163,18 @@ def cmd_redteam(args: argparse.Namespace) -> int:
 
     RUNS_DIR.mkdir(exist_ok=True)
     path = RUNS_DIR / f"{directive['campaign_id']}.attempts.jsonl"
+    # Persist PHI-redacted transcripts — a leaked clinical value must not land on
+    # disk in the clear (the cross-patient attack marker is retained for triage).
+    from agentforge.redact import redact_attempt, redact_phi
     with path.open("w") as fh:
         for a in attempts:
-            fh.write(json.dumps(a) + "\n")
+            fh.write(json.dumps(redact_attempt(a)) + "\n")
 
     print(f"ran {len(attempts)} attempts across {len(seeds)} seeds -> {path}")
     for a in attempts[: args.show]:
         target_turn: dict = next((t for t in a["turns"] if t["role"] == "target"), {})
         print(f"  {a['attempt_id']} [{a['attack_technique']:8}] "
-              f"{a['attack_category']:22} -> {target_turn.get('content', '')[:70]!r}")
+              f"{a['attack_category']:22} -> {redact_phi(target_turn.get('content', ''))[:70]!r}")
     return 0
 
 
@@ -240,6 +244,9 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         hist = HistoryStore(sqlite_path=RUNS_DIR / "history.db")
         hist.record_snapshot(run_id, summary, mode="dry-run" if args.dry_run else "live",
                              target_version=orch.state.last_target_version)
+        # Findings land in the indexed `findings` table (severity/attack_category
+        # are real columns), so triage queries are index-backed, not JSON scans.
+        hist.record_findings(run_id, result.reports)
         print(f"  history -> {hist.backend} snapshot for {run_id}")
     except Exception as exc:  # noqa: BLE001
         print(f"  history -> skipped ({type(exc).__name__}: {exc})")
@@ -329,6 +336,58 @@ def cmd_regression(args: argparse.Namespace) -> int:
 def _result_row(r) -> dict:
     return {"case_id": r.case_id, "attack_category": r.attack_category,
             "status": r.status, "verdict": r.verdict, "detail": r.detail}
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Publish a finding from a runs/*.reports.json, enforcing the approval gate.
+
+    A non-critical DRAFT publishes; a critical PENDING_HUMAN finding is refused
+    unless --approver names the human who approved it. This is the enforcement
+    point for the human gate, not a status label.
+    """
+    path = Path(args.reports)
+    reports = json.loads(path.read_text())
+    hit = next((r for r in reports if r.get("finding_id") == args.finding_id), None)
+    if hit is None:
+        print(f"no finding {args.finding_id} in {path.name}", file=sys.stderr)
+        return 2
+    if hit.get("status") == "published":
+        print(f"{args.finding_id} already published"
+              + (f" (approved by {hit.get('approved_by')})" if hit.get("approved_by") else ""))
+        return 0
+    if hit.get("status") == "pending_human_approval" and not args.approver:
+        print(f"REFUSED: {args.finding_id} is {hit.get('severity')} and requires "
+              f"human approval — re-run with --approver <name>", file=sys.stderr)
+        return 3
+    hit["status"] = "published"
+    if args.approver:
+        hit["approved_by"] = args.approver
+    path.write_text(json.dumps(reports, indent=2))
+    print(f"published {args.finding_id}"
+          + (f" (approved by {args.approver})" if args.approver else " (non-critical)"))
+    return 0
+
+
+def cmd_lifecycle(args: argparse.Namespace) -> int:
+    """Transition a finding's remediation lifecycle (open/in_progress/resolved).
+
+    Validates the transition and updates the finding in a runs/*.reports.json.
+    """
+    from agentforge.agents.documentation import _LIFECYCLE_TRANSITIONS
+    path = Path(args.reports)
+    reports = json.loads(path.read_text())
+    hit = next((r for r in reports if r.get("finding_id") == args.finding_id), None)
+    if hit is None:
+        print(f"no finding {args.finding_id} in {path.name}", file=sys.stderr)
+        return 2
+    current = hit.get("lifecycle", "open")
+    if args.state != current and args.state not in _LIFECYCLE_TRANSITIONS.get(current, set()):
+        print(f"REFUSED: illegal transition {current} -> {args.state}", file=sys.stderr)
+        return 3
+    hit["lifecycle"] = args.state
+    path.write_text(json.dumps(reports, indent=2))
+    print(f"{args.finding_id}: {current} -> {args.state}")
+    return 0
 
 
 def cmd_loadtest(args: argparse.Namespace) -> int:
@@ -456,6 +515,19 @@ def main(argv: list[str] | None = None) -> int:
 
     pb = sub.add_parser("probe", help="run deterministic HTTP probes (unauth surface)")
     pb.set_defaults(func=cmd_probe)
+
+    pubp = sub.add_parser("publish", help="publish a finding (enforces the human-approval gate)")
+    pubp.add_argument("reports", help="path to a runs/*.reports.json file")
+    pubp.add_argument("--finding-id", required=True, help="finding_id to publish")
+    pubp.add_argument("--approver", default=None,
+                      help="name of the human approving a critical finding (required for critical)")
+    pubp.set_defaults(func=cmd_publish)
+
+    lc = sub.add_parser("lifecycle", help="transition a finding's lifecycle (open/in_progress/resolved)")
+    lc.add_argument("reports", help="path to a runs/*.reports.json file")
+    lc.add_argument("--finding-id", required=True)
+    lc.add_argument("--state", required=True, choices=["open", "in_progress", "resolved"])
+    lc.set_defaults(func=cmd_lifecycle)
 
     rg = sub.add_parser("regression", help="replay the regression suite (invariant-based)")
     add_target_opts(rg)

@@ -20,7 +20,7 @@ from typing import Callable
 
 from .. import costs
 from ..contracts.models import (AttackAttempt, AttackCategory, TargetMetadata,
-                                TargetSurface, Turn)
+                                TargetSurface, Turn, validate_message)
 from ..target.client import TargetClient, TargetUnreachable
 
 
@@ -123,8 +123,12 @@ class RedTeamAgent:
     def run_directive(self, directive: dict, seed_cases: list[SeedCase]) -> list[dict]:
         """Execute one campaign directive. Returns AttackAttempt wire messages.
 
-        Respects budget.max_attempts. Stops early on target_unreachable.
+        Respects budget.max_attempts. Stops early on target_unreachable. The
+        directive is validated on receipt (consumer-side): a message that
+        declares itself an ``orchestrator_to_redteam`` but fails the contract is
+        rejected here, not trusted because the producer "should have" validated.
         """
+        validate_message(directive)
         budget = directive["budget"]["max_attempts"]
         max_turns = directive.get("max_turns", 6)
         attempts: list[dict | None] = []  # _run_one may return None; filtered on return

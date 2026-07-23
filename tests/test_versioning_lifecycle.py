@@ -72,3 +72,70 @@ def test_lifecycle_illegal_transition_rejected():
     r = _report(lifecycle=RESOLVED)
     with pytest.raises(ValueError):
         r.set_lifecycle(IN_PROGRESS)   # resolved -> in_progress is not allowed
+
+
+def test_cost_breakdown_splits_by_component(tmp_path):
+    import glob, json as _json
+    from agentforge.pipeline import run_campaign
+    from agentforge.agents.redteam import SeedCase
+    from agentforge.target.client import MockTargetClient
+    seeds = []
+    for f in sorted(glob.glob(str(ROOT / "evals/cases/*.json"))):
+        for d in _json.loads(Path(f).read_text()):
+            if d["target_surface"] in ("chat", "agent"):
+                seeds.append(SeedCase.from_eval(d))
+    store = ObservabilityStore(tmp_path / "run.jsonl")
+    run_campaign(target=MockTargetClient("defended"), seeds=seeds, store=store,
+                 max_rounds=1, max_attempts_per_round=4)
+    cb = store.cost_breakdown()
+    assert cb["total_usd"] > 0
+    assert "target_and_redteam" in cb["by_component"]
+    assert cb["per_attempt_usd"] > 0            # the marginal-cost slope
+    assert store.summary()["cost_breakdown"]["total_usd"] == cb["total_usd"]
+
+
+class _LeakThenDefend:
+    """Leaks on v1 (findings promoted), defends on v2 (a fix) — so the version
+    change regression resolves the finding."""
+
+    def __init__(self):
+        self._n = 0
+
+    def start_chat(self, pid):
+        return "s"
+
+    def _turn(self, text):
+        from agentforge.target.client import TurnResult
+        self._n += 1
+        leaky = self._n <= 3        # round 1 (3 attempts, adaptive off) leaks on v1
+        content = ("Sure — patient 2's A1c is 8.1%" if leaky
+                   else "I can only provide information for the patient pinned to this conversation.")
+        r = TurnResult(content=content, http_status=200, latency_ms=5.0)
+        r.raw = {"target_version": "v1" if leaky else "v2"}
+        return r
+
+    def chat_turn(self, session_id, message):
+        return self._turn(message)
+
+    def agent_ask(self, pid, question):
+        return self._turn(question)
+
+
+def test_lifecycle_resolves_on_regression_fix(tmp_path):
+    import glob, json as _json
+    from agentforge.pipeline import run_campaign
+    from agentforge.agents.redteam import SeedCase
+    seeds = []
+    for f in sorted(glob.glob(str(ROOT / "evals/cases/data_exfiltration.json"))):
+        for d in _json.loads(Path(f).read_text()):
+            if d["target_surface"] == "chat":
+                seeds.append(SeedCase.from_eval(d))
+    store = ObservabilityStore(tmp_path / "run.jsonl")
+    result = run_campaign(target=_LeakThenDefend(), seeds=seeds, store=store,
+                          max_rounds=3, max_attempts_per_round=3, enable_adaptive=False)
+    # A version change fired the regression; findings that no longer reproduce
+    # are transitioned to resolved in live code.
+    assert result.regression is not None
+    lifecycles = {r.lifecycle for r in result.reports}
+    assert "resolved" in lifecycles
+    assert any(e.get("type") == "lifecycle" for e in store.events())

@@ -16,8 +16,12 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 - **Users:** [`USERS.md`](USERS.md)
 - **Contracts:** [`contracts/`](contracts/) — versioned inter-agent JSON Schemas
 - **Seed attack suite:** [`evals/`](evals/) — 29 cases across all 5 attack
-  categories (incl. `state_corruption`), full OWASP coverage — web A01–A10 and
-  LLM01–LLM10 — each carrying its observed live/probe result
+  categories (incl. `state_corruption`), **tagged** across all 20 OWASP items
+  (web A01–A10, LLM01–LLM10). **19 of 29 are executed** (15 pass / 2 fail / 2
+  partial); the other **10 are honestly labeled `not_run`** — they target surfaces
+  (ingest/doc, concurrency, SSRF collaborator) that need harnesses not yet wired,
+  and each says so in-file. Coverage is *tagged everywhere, executed where the
+  loop reaches*, not executed everywhere.
 - **Deploy it standalone:** [`DEPLOY.md`](DEPLOY.md) — run AgentForge as its own
   Railway service, pointed at any OpenEMR instance via env vars
 - **Continue this build:** [`HANDOFF.md`](HANDOFF.md)
@@ -33,16 +37,19 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | Target HTTP client (OpenEMR auth) | ✅ **auth + CSRF handshake verified live** |
 | Judge agent (rubric `1.0.0` + ground-truth drift check) | ✅ complete, tests green |
 | Orchestrator (coverage/severity scoring + budget/halt) | ✅ complete, tests green |
-| Documentation agent (report + regression case + human gate + lifecycle) | ✅ complete; confirmed exploits **promoted into the live regression suite** |
+| Documentation agent (report + regression case) | ✅ complete; confirmed exploits **promoted into the live regression suite** |
+| Human-approval gate (real, enforced) | ✅ `publish()`/`publish` CLI **refuse** a critical without a named approver (not a label) |
 | Regression harness (invariant replay + siblings + cross-category) | ✅ **3-way** held/regressed/inconclusive (uncertain ≠ pass); triggered in-loop + `regression` CLI |
-| Cost accounting (per-attempt estimate → budget breaker) | ✅ complete; drives `budget_exceeded` halt + dashboard cost |
-| Judge-drift gate (`check_ground_truth`) enforced each campaign | ✅ complete, tests green |
-| Contract validation (producer **and** consumer on receipt) | ✅ complete, tests green |
-| Observability (append-only rollups + **per-version** pass/fail) | ✅ complete, tests green |
-| History store (SQLite/Postgres) with **in-place schema migrations** | ✅ complete; `docs/migrations/` |
+| Typed errors on the wire | ✅ `budget_exceeded`/`no_findings_in_window`/`target_unreachable`/`judge_timeout`/`regression_detected` emitted via schema-validated `AgentError` |
+| Cost accounting (per-attempt → budget breaker + **per-component breakdown**) | ✅ drives `budget_exceeded` halt; `cost_breakdown()` splits target/Judge + per-attempt rate |
+| Contract validation (producer **and** consumer on all 3 boundaries) | ✅ directive now has a pydantic model + consumer-side check, tests green |
+| PHI redaction on persisted evidence + dashboard | ✅ clinical values scrubbed at write time (`redact.py`); attack marker retained |
+| Observability (per-version pass/fail + finding **lifecycle** open→resolved) | ✅ lifecycle driven live by regression outcome; answers all 6 required questions |
+| History store (SQLite/Postgres): migrations + **indexed `findings`** (severity/category) | ✅ `docs/migrations/`; index-backed triage queries |
+| CI (`.github/workflows`) | ✅ suite + offline smoke + regression-scan SLO |
 | LangGraph runtime (4 agents over typed edges) | ✅ optional; invocable via `campaign --use-langgraph`, plain runner canonical |
 
-All four agents and the deterministic substrate are implemented — **115 passing
+All four agents and the deterministic substrate are implemented — **133 passing
 tests** — and the full loop has been run live against the deployed co-pilot
 (which defended the seeded attacks). The closed feedback loop, exploit promotion,
 cost-based budget breaker, 3-way regression, consumer-side contract validation,
@@ -164,8 +171,9 @@ agentforge/
     pipeline.py          # wires the 4 agents (LangGraph-compatible) + drift/regression/cost gates
     web.py               # local web dashboard (stdlib only) — GUI control panel
     loadtest.py          # baseline load test of the cheap unauth surface
-    cli.py               # redteam | campaign | judge | regression | dashboard | probe | web | loadtest
+    redact.py            # PHI redaction for persisted evidence + dashboard
+    cli.py               # redteam|campaign|judge|regression|publish|lifecycle|dashboard|probe|web|loadtest
   tests/                 # contracts, models, redteam, observability, judge, documentation,
-                         # orchestrator+pipeline, regression, wiring, adaptive,
-                         # llm-e2e, versioning/lifecycle, fix-validation (115 green)
+                         # orchestrator+pipeline, regression, wiring, adaptive, llm-e2e,
+                         # versioning/lifecycle, typed-errors, redact, fix-validation (133 green)
 ```
