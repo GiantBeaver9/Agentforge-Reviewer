@@ -114,7 +114,7 @@ So the rule is a decision, applied per sub-problem:
 | Does it require **generating something novel** or a **judgement in natural language**? | **LLM** (metered) | Red Team attack generation, Judge verdict on subtle leaks, Documentation prose |
 | Is it a **verdict that must be trusted**? | **Deterministic gate first, LLM only on the residue** | Judge: rubric decides clear cases free; LLM escalated only on `uncertain` |
 
-This is why the platform can attack across five categories, probe the whole
+This is why the platform can attack across six categories, probe the whole
 unauthenticated surface, and run a regression suite for **pennies per campaign** —
 the expensive tool is only ever pointed at the part of the problem that actually
 needs it. Reaching for an LLM where a rule would do is not "more AI," it is a more
@@ -257,7 +257,7 @@ multi-turn, coverage-driven, clinically-judged parts they don't cover.
 | Judge LLM (frontier) | API key | queue + exponential backoff on `rate_limited` |
 
 _Status: all four agents and the deterministic substrate are now implemented and
-tested (70 passing tests). Built: the versioned Contracts; the Red Team agent
+tested (115 passing tests). Built: the versioned Contracts; the Red Team agent
 (verified live against the deployed target); the Judge (deterministic rubric
 `1.0.0` + ground-truth drift check); the Documentation agent (report + regression
 case + human gate on critical); the Orchestrator (coverage/severity scoring +

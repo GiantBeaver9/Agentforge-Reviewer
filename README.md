@@ -15,7 +15,7 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 - **Threat model:** [`THREAT_MODEL.md`](THREAT_MODEL.md) — the attack surface
 - **Users:** [`USERS.md`](USERS.md)
 - **Contracts:** [`contracts/`](contracts/) — versioned inter-agent JSON Schemas
-- **Seed attack suite:** [`evals/`](evals/) — 29 cases across all 5 attack
+- **Seed attack suite:** [`evals/`](evals/) — 29 cases across all 6 attack
   categories (incl. `state_corruption`), full OWASP coverage — web A01–A10 and
   LLM01–LLM10 — each carrying its observed live/probe result
 - **Deploy it standalone:** [`DEPLOY.md`](DEPLOY.md) — run AgentForge as its own
@@ -28,7 +28,7 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 |---|---|
 | Threat model | ✅ complete |
 | Inter-agent contracts (v1) + tests | ✅ complete, tests green |
-| Seed eval suite (5 categories, OWASP-tagged) | ✅ complete |
+| Seed eval suite (6 categories, OWASP-tagged) | ✅ complete |
 | Red Team agent | ✅ **verified live**; **closed feedback loop** — Judge verdict drives ~10 autonomous variants off a partial/success |
 | Target HTTP client (OpenEMR auth) | ✅ **auth + CSRF handshake verified live** |
 | Judge agent (rubric `1.0.0` + ground-truth drift check) | ✅ complete, tests green |

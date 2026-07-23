@@ -85,7 +85,7 @@ state plainly and it is a design outcome, not luck:
   deterministic cores (Judge rubric, Orchestrator scoring, Red Team mutation
   operators, probes, regression replay), and the sandbox that built it has
   **external LLM/OpenRouter egress blocked** (docs/SECURITY_SCAN.md) — so no
-  frontier tokens were ever spent to develop or test it. The 93-test suite runs
+  frontier tokens were ever spent to develop or test it. The 115-test suite runs
   fully offline against `MockTargetClient`.
 - **Target-side spend during live validation: single-digit dollars.** Live
   end-to-end runs against the deployed co-pilot were capped (`--rounds 2

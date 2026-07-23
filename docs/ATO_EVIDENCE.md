@@ -71,7 +71,7 @@ contexts), not by policy alone.
 
 ## 5. Test evidence summary
 
-- **Automated assurance:** 86 passing tests (contracts, agents, drift check,
+- **Automated assurance:** 115 passing tests (contracts, agents, drift check,
   probes, load, web, history) — `pytest tests/ -q`.
 - **Live verification:** auth handshake + full four-agent loop run against the
   deployed target; the co-pilot defended all seeded LLM attacks

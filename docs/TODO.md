@@ -3,7 +3,7 @@
 This list is the output of an independent, adversarial verification pass: ten
 sub-agent auditors checked the platform against the Gauntlet Week-3 rubric, plus
 a docs-vs-code drift audit. **The MVP passes** — four agents + deterministic
-substrate implemented, 70 tests green, verified live against the deployed
+substrate implemented, 115 tests green, verified live against the deployed
 co-pilot. Nothing below blocks submission; these are the honest remaining gaps,
 kept visible on purpose rather than smoothed over.
 

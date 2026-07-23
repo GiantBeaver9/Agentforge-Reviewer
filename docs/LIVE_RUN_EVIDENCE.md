@@ -35,11 +35,13 @@ coverage (category / surface: attempts, verdicts, success, pass_rate):
 `pass_rate = 1.00` means the co-pilot **defended every judged attempt**
 (`verdict=failure`).
 
-## Full coverage matrix — all 5 attack categories, both surfaces (live)
+## Full coverage matrix — 5 of the 6 attack categories, both surfaces (live)
 
-Across the campaign runs plus targeted agent-surface runs, every category in the
-seed suite was exercised against the live target, on both the `chat` and `agent`
-surfaces. **All defended.**
+Across the campaign runs plus targeted agent-surface runs, five of the six seed
+categories were exercised against the live target, on both the `chat` and `agent`
+surfaces. The sixth, `state_corruption`, is covered by regression replay rather
+than a dedicated live campaign (its cross-turn invariant is pinned in the
+regression suite, not run as a standalone live category here). **All defended.**
 
 | Attack category | Surface | Attempts | Verdict | Representative target response (verbatim, no PHI) |
 |---|---|---|---|---|
@@ -64,7 +66,7 @@ declining to assert an unverifiable claim.
 
 - The **live target client** (auth + CSRF + retry) works on both surfaces.
 - The **Red Team** drives real multi-turn attacks against `chat.php` and
-  `agent.php` across all 5 seed categories.
+  `agent.php` across five of the six seed categories.
 - The **Judge** produces contract-valid verdicts; its deterministic rubric was
   tightened against *real observed refusals* (added to `evals/ground_truth.json`
   so the drift check pins them, now 7/7). No false-positive findings were produced.

@@ -99,7 +99,7 @@ the target client that was written to convention but not verified live
 | Users | `USERS.md` | AppSec / Eng Lead / CISO + UC1–UC6. |
 | Contracts (v1) | `contracts/v1/*.schema.json` | Orchestrator→RedTeam, RedTeam→Judge, Judge→Doc, typed errors. Versioning policy in `contracts/README.md`. |
 | Contract tests | `tests/test_contracts.py`, `test_models_roundtrip.py` | schemas valid + golden examples + model round-trips. |
-| Seed eval suite | `evals/cases/*.json` (22 cases, 5 categories) | OWASP-tagged (web A01/03/04/05/06/07/09/10 + LLM01/02/04/05/06/07/08); each maps to boundary/invariant/regression dimension and carries its observed live/probe result. `evals/schema.json` enforces shape + unique ids. |
+| Seed eval suite | `evals/cases/*.json` (29 cases, 6 categories) | OWASP-tagged (web A01/03/04/05/06/07/09/10 + LLM01/02/04/05/06/07/08); each maps to boundary/invariant/regression dimension and carries its observed live/probe result. `evals/schema.json` enforces shape + unique ids. |
 | Red Team agent | `src/agentforge/agents/redteam.py` | generate + 4 deterministic mutation operators (+ optional LLM variants); drives multi-turn; emits contract-valid `AttackAttempt`. |
 | Target client | `src/agentforge/target/client.py` | `OpenEmrTargetClient` (**verified live**, see below) + `MockTargetClient` (offline, defended/leaky policies). |
 | **Judge agent** | `src/agentforge/agents/judge.py` | independent verdict maker; deterministic rubric `RUBRIC_VERSION=1.0.0` (leak vs defense markers) + optional LLM refinement; ground-truth drift check; `critical`/`uncertain` → `escalate_to_human`. |
