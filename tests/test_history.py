@@ -73,3 +73,43 @@ def test_trends_reports_backend_and_series(tmp_path):
     assert t["backend"] == "sqlite"
     assert t["count"] == 1
     assert t["series"][0]["run_id"] == "camp-1"
+
+
+def test_schema_is_versioned_and_target_version_persists(tmp_path):
+    store = HistoryStore(url="", sqlite_path=tmp_path / "h.db")
+    from agentforge.observability.history import SCHEMA_VERSION
+    assert store.schema_version() == SCHEMA_VERSION
+    store.record_snapshot("camp-1", _summary(6, 4, 4), mode="live",
+                          target_version="v7")
+    assert store.snapshots()[0]["target_version"] == "v7"
+
+
+def test_migration_upgrades_a_v1_database_in_place(tmp_path):
+    import sqlite3
+    dbp = tmp_path / "old.db"
+    # Simulate a pre-migration (v1) DB: the base table, a row, no schema_meta
+    # and no target_version column.
+    conn = sqlite3.connect(str(dbp))
+    conn.execute(
+        "CREATE TABLE campaign_snapshots ("
+        " run_id TEXT PRIMARY KEY, recorded_at TEXT NOT NULL, mode TEXT NOT NULL,"
+        " attempts INTEGER NOT NULL, verdicts INTEGER NOT NULL,"
+        " open_findings INTEGER NOT NULL, cost_usd DOUBLE PRECISION NOT NULL,"
+        " pass_rate DOUBLE PRECISION, coverage_json TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO campaign_snapshots VALUES"
+        " ('old-1','2026-01-01T00:00:00+00:00','live',3,3,0,0.0,1.0,'[]')")
+    conn.commit()
+    conn.close()
+
+    # Opening the store must migrate the existing DB (add target_version + meta)
+    # without losing the old row.
+    from agentforge.observability.history import SCHEMA_VERSION
+    store = HistoryStore(url="", sqlite_path=dbp)
+    assert store.schema_version() == SCHEMA_VERSION
+    series = store.snapshots()
+    assert [s["run_id"] for s in series] == ["old-1"]      # old data preserved
+    assert series[0]["target_version"] is None             # new column, back-filled null
+    # And the new column is usable post-migration.
+    store.record_snapshot("new-1", _summary(6, 4, 4), target_version="v2")
+    assert {s["run_id"] for s in store.snapshots()} == {"old-1", "new-1"}

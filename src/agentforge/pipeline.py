@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import costs
+from .contracts.models import ContractViolation, validate_message
 from .agents.documentation import (DocumentationAgent, DataQualityError,
                                    VulnerabilityReport, dedupe_reports)
 from .agents.judge import JudgeAgent
@@ -41,6 +42,10 @@ class CampaignResult:
     regression: RegressionReport | None = None
     # Set when the campaign ran the Judge-drift gate against ground truth.
     drift: dict[str, Any] | None = None
+    # Confirmed exploits promoted to deterministic regression cases this run.
+    regression_cases_discovered: list[dict[str, Any]] = field(default_factory=list)
+    # Count of adaptive (feedback-driven) attempts spawned off partial/successes.
+    adaptive_attempts: int = 0
 
 
 def _seed_index(seeds: list[SeedCase]) -> dict[tuple[str, str], list[SeedCase]]:
@@ -64,6 +69,8 @@ def run_campaign(
     redteam_llm=None,
     regression_cases: list[SeedCase] | None = None,
     ground_truth: list[dict[str, Any]] | None = None,
+    enable_adaptive: bool = True,
+    adaptive_variants: int = 10,
 ) -> CampaignResult:
     """Run the full Orchestrator→RedTeam→Judge→Documentation loop to a halt.
 
@@ -72,14 +79,23 @@ def run_campaign(
     loop stops on the Orchestrator's halt decision (budget or no-signal window)
     or when ``max_rounds`` is reached.
 
-    Two gates the review flagged as "built but dead" now run in-loop:
+    The loop is genuinely closed: when the Judge scores an attempt ``partial`` (a
+    near miss) or ``success``, the Red Team autonomously refines it into up to
+    ``adaptive_variants`` new variants off the *winning* attacker turn and runs
+    them in the same round — no human picks what to try next (``enable_adaptive``).
+    Confirmed exploits are promoted to deterministic regression cases in-run
+    (``result.regression_cases_discovered``) and replayed by the harness, so a
+    finding discovered this run — not just a static seed — guards the next build.
+
+    Two gates the review flagged as "built but dead" also run in-loop:
 
     * ``ground_truth`` — if given, the Judge-drift gate (``check_ground_truth``)
       runs *before* any exploration and its result is recorded. A rubric that no
       longer agrees with the labeled attempts is surfaced, not silently trusted.
     * ``regression_cases`` — replayed by the :class:`RegressionHarness` the moment
-      the target's deploy id changes mid-campaign (defaults to ``seeds``), so a
-      new build is regression-checked before more budget is spent exploring it.
+      the target's deploy id changes mid-campaign (defaults to ``seeds`` plus the
+      exploits confirmed so far this run), so a new build is regression-checked
+      before more budget is spent exploring it.
     """
     judge = judge or JudgeAgent()
     documentation = documentation or DocumentationAgent()
@@ -110,31 +126,71 @@ def run_campaign(
                 break
             continue
 
-        attempts = redteam.run_directive(directive, cell_seeds)
-        store.record_all(attempts)
-        result.attempts.extend(attempts)
+        base_attempts = redteam.run_directive(directive, cell_seeds)
 
+        # Feedback loop: process each attempt, and when the Judge reports a
+        # partial/success, queue an autonomous refinement fan-out off that
+        # attempt. ``pending`` is a work queue so refinements are judged too;
+        # depth is capped (refinements are not themselves refined) and the total
+        # adaptive spend per round is bounded by ``adaptive_variants``.
+        pending: list[dict[str, Any]] = list(base_attempts)
+        round_attempts: list[dict[str, Any]] = []
         new_successes = 0
-        for attempt in attempts:
-            verdict = judge.judge(attempt).to_wire()
+        adaptive_spawned = 0
+        while pending:
+            attempt = pending.pop(0)
+            # Consumer-side validation: the Judge validates the AttackAttempt it
+            # RECEIVES, independent of the Red Team having validated on produce. A
+            # malformed/spoofed attempt is rejected at the boundary, not trusted.
+            try:
+                validate_message(attempt)
+            except ContractViolation as exc:
+                store.record(_invalid_message_event(attempt, str(exc)))
+                continue
+            store.record(attempt)
+            result.attempts.append(attempt)
+            round_attempts.append(attempt)
+
+            verdict = validate_message(judge.judge(attempt).to_wire())
             store.record(verdict)
             result.verdicts.append(verdict)
-            # The LLM Judge path costs money (the deterministic rubric is free);
-            # record it so the dashboard cost total reflects real Judge spend.
             if verdict.get("decision_path") == "llm":
                 _record_judge_cost(store, attempt, verdict)
+            if verdict.get("escalate_to_human"):
+                _record_escalation(store, attempt, verdict)
+
             if verdict["verdict"] == "success":
                 new_successes += 1
                 try:
                     report = documentation.document(verdict, attempt)
                     result.reports.append(report)
+                    # Promote the confirmed exploit into the regression suite
+                    # (consume add_to_regression): a finding found THIS run now
+                    # guards the next build, not just the static seeds.
+                    if verdict.get("add_to_regression"):
+                        result.regression_cases_discovered.append(
+                            documentation.regression_case(report))
                 except DataQualityError:
-                    # A malformed success is dropped, not published — the
-                    # data-quality gate is doing its job.
-                    continue
+                    # A malformed success is dropped, not published.
+                    pass
 
-        orchestrator.account(attempts, new_successes=new_successes)
-        version = _observed_version(attempts)
+            # Adaptive escalation on a near-miss/win — the closed feedback loop.
+            if (enable_adaptive
+                    and verdict["verdict"] in ("partial", "success")
+                    and attempt.get("attack_technique") != "adaptive"
+                    and adaptive_spawned < adaptive_variants):
+                syn_seed = _seed_from_attempt(attempt)
+                followups = redteam.refine(
+                    directive, attempt, verdict, syn_seed,
+                    n=adaptive_variants - adaptive_spawned,
+                    max_turns=directive.get("max_turns", 6))
+                if followups:
+                    adaptive_spawned += len(followups)
+                    result.adaptive_attempts += len(followups)
+                    pending.extend(followups)
+
+        orchestrator.account(round_attempts, new_successes=new_successes)
+        version = _observed_version(round_attempts)
         if orchestrator.target_changed(version):
             store.record({
                 "schema_version": "1.0.0", "type": "error", "producer": "orchestrator",
@@ -146,9 +202,12 @@ def run_campaign(
             })
             # Actually run the harness now (previously only signaled): replay the
             # regression suite (cross-category) against the new build before any
-            # further exploration spends budget on it.
+            # further exploration spends budget on it — INCLUDING the exploits
+            # confirmed so far this run, not just the static seeds.
+            discovered = [SeedCase.from_regression_case(c)
+                          for c in result.regression_cases_discovered]
             result.regression = _run_regression(
-                target, judge, pinned_pid, regression_cases, seeds,
+                target, judge, pinned_pid, regression_cases + discovered, seeds,
                 store, directive["campaign_id"])
 
         decision = orchestrator.halt_check()
@@ -159,6 +218,55 @@ def run_campaign(
     # Data-quality: collapse duplicate findings (same attack sequence on the same
     # cell) before the reports are persisted — enforce the dedupe the review
     # noted was implemented but never called in the running campaign.
+    result.reports = dedupe_reports(result.reports)
+    result.halt = result.halt or orchestrator.halt_check()
+    return result
+
+
+def run_via_langgraph(
+    *,
+    target: TargetClient,
+    seeds: list[SeedCase],
+    store: ObservabilityStore,
+    orchestrator: OrchestratorAgent,
+    judge: JudgeAgent | None = None,
+    documentation: DocumentationAgent | None = None,
+    pinned_pid: int = 1,
+    max_rounds: int = 3,
+    max_attempts_per_round: int = 6,
+) -> CampaignResult:
+    """Execute the campaign through the actual LangGraph ``StateGraph`` runtime.
+
+    This is the optional graph runtime: :func:`build_langgraph` wires the same
+    four agents over the same typed edges, and we ``invoke`` it once per round,
+    accounting/halting between rounds. Raises ``ImportError`` if ``langgraph`` is
+    not installed, so the CLI falls back to the canonical plain-Python runner
+    (which additionally carries the adaptive/promotion loop). The two share the
+    same agents and store, so findings are identical for the same inputs.
+    """
+    judge = judge or JudgeAgent()
+    documentation = documentation or DocumentationAgent()
+    graph = build_langgraph(
+        target=target, seeds=seeds, store=store, orchestrator=orchestrator,
+        judge=judge, documentation=documentation, pinned_pid=pinned_pid,
+        max_attempts_per_round=max_attempts_per_round)
+
+    result = CampaignResult()
+    for _ in range(max_rounds):
+        state = graph.invoke({})
+        if state.get("directive"):
+            result.directives.append(state["directive"])
+        attempts = state.get("attempts", [])
+        verdicts = state.get("verdicts", [])
+        result.attempts.extend(attempts)
+        result.verdicts.extend(verdicts)
+        result.reports.extend(state.get("reports", []))
+        orchestrator.account(
+            attempts, new_successes=sum(1 for v in verdicts if v["verdict"] == "success"))
+        decision = orchestrator.halt_check()
+        if decision.halt:
+            result.halt = decision
+            break
     result.reports = dedupe_reports(result.reports)
     result.halt = result.halt or orchestrator.halt_check()
     return result
@@ -211,6 +319,47 @@ def _run_regression(target: TargetClient, judge: JudgeAgent, pinned_pid: int,
         "regressed_cases": summary["regressed_cases"], "invariant_held": report.passed,
     })
     return report
+
+
+def _invalid_message_event(attempt: dict[str, Any], detail: str) -> dict[str, Any]:
+    return {
+        "schema_version": "1.0.0", "type": "error", "producer": "judge",
+        "message_id": "badmsg", "correlation_id": attempt.get("correlation_id", "unknown"),
+        "created_at": _now(), "error_code": "invalid_message",
+        "message": f"rejected malformed attempt on receipt: {detail[:180]}",
+        "retryable": False,
+    }
+
+
+def _seed_from_attempt(attempt: dict[str, Any]) -> SeedCase:
+    """Reconstruct a replayable SeedCase from an attempt wire message, so the Red
+    Team can refine it without needing a handle on the original seed object."""
+    attacker = [t["content"] for t in attempt.get("turns", [])
+                if t.get("role") == "attacker"]
+    return SeedCase(
+        id=attempt.get("attempt_id", "adaptive"),
+        attack_category=attempt["attack_category"],
+        subcategory=attempt.get("subcategory", ""),
+        target_surface=attempt["target_surface"],
+        owasp_web=attempt.get("owasp_web", []),
+        owasp_llm=attempt.get("owasp_llm", []),
+        input_sequence=attacker or [""],
+        expected_safe_behavior=attempt["expected_safe_behavior"],
+    )
+
+
+def _record_escalation(store: ObservabilityStore, attempt: dict[str, Any],
+                       verdict: dict[str, Any]) -> None:
+    """Consume the Judge's escalate_to_human flag as a visible event (a critical
+    finding or an uncertain verdict a human should look at)."""
+    store.record({
+        "schema_version": "1.0.0", "type": "escalation", "producer": "judge",
+        "message_id": "escal", "correlation_id": verdict.get("correlation_id", ""),
+        "created_at": _now(), "attempt_id": attempt.get("attempt_id"),
+        "verdict": verdict.get("verdict"), "severity": verdict.get("severity"),
+        "reason": "critical_severity" if verdict.get("severity") == "critical"
+                  else "uncertain_verdict",
+    })
 
 
 def _record_judge_cost(store: ObservabilityStore, attempt: dict[str, Any],

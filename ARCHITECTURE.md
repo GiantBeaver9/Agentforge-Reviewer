@@ -20,9 +20,13 @@ observability store) sits underneath them.
    and triggers regression runs when the target version changes. It is mostly
    rules over metrics, not an LLM, so its decisions are auditable.
 2. **Red Team** (trust: low; local/open model). Generates novel adversarial
-   inputs and **mutates** partially-successful ones (role-play, encoding,
-   authority framing, multi-turn escalation) against the live target. It runs on
-   a local/open model that will not refuse offensive-security prompts; it never
+   inputs and **mutates** them (role-play, encoding, authority framing, multi-turn
+   escalation) against the live target. Critically, this is a **closed feedback
+   loop**: when the Judge scores an attempt `partial` or `success`, the Red Team
+   autonomously refines that *winning* turn into up to ten new variants and runs
+   them in the same round — the Judge's verdict, not a human, decides what to try
+   next (`RedTeamAgent.refine`, driven from `pipeline.run_campaign`). It runs on a
+   local/open model that will not refuse offensive-security prompts; it never
    judges its own output.
 3. **Judge** (trust: high; independent frontier model). The *only* agent that
    decides success/failure/partial/uncertain, against a versioned rubric, with
@@ -35,12 +39,23 @@ observability store) sits underneath them.
 
 **How work flows.** Orchestrator → `AttackCampaignDirective` → Red Team →
 `AttackAttempt` (full transcript + observed behavior) → Judge → `Verdict` →
-(if success) Documentation → report + regression case; the Verdict also flows
-back to the Orchestrator to update coverage and trigger regression. Every
-message shares a `correlation_id`, so a finding is traceable end-to-end through
-the logs. Typed error messages (`target_unreachable`, `budget_exceeded`,
-`judge_timeout`, `regression_detected`, …) let any agent fail loudly and let the
-Orchestrator re-plan.
+(if success) Documentation → report + regression case. A confirmed exploit is
+**promoted into the live regression suite in-run** (consuming the Judge's
+`add_to_regression` flag), so a finding discovered this campaign — not just a
+static seed — is replayed against the next build. A `partial`/`success` verdict
+also feeds the Red Team's refinement loop, and the Verdict flows back to the
+Orchestrator to update coverage and trigger regression on a version change. Each
+consumer independently **validates the message it receives** against the
+contract (`contracts.models.validate_message`), not only the producer on send.
+Every message shares a `correlation_id`, so a finding is traceable end-to-end.
+Typed error messages (`target_unreachable`, `budget_exceeded`, `judge_timeout`,
+`regression_detected`, `invalid_message`, …) let any agent fail loudly.
+
+**Regression = fixed, not merely changed.** The harness classifies a replay three
+ways: `held` (the target affirmatively defended — the only pass), `regressed`
+(the exploit reproduced), and `inconclusive` (the build drifted into an
+unclassifiable answer). An `uncertain` replay is **not** a pass, so a fix that
+only reworded the leak cannot sneak through green; `--strict` fails CI on drift.
 
 **AI vs. deterministic.** LLMs do what only LLMs can — creative attack
 generation, natural-language judgement, prose reports. Everything that can be

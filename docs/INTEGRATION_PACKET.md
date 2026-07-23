@@ -131,12 +131,16 @@ made empirically via `check_ground_truth()`, not by vendor.
 **ADR-003 — Versioned JSON-Schema contracts at every agent seam.**
 *Context:* four agents plus external consumers (SIEM, ticketing) must interoperate
 without breaking on change.
-*Decision:* every inter-agent message is a versioned schema (`contracts/v1/*`),
-validated on both produce and consume; a single append-only JSONL store keyed by
-`correlation_id` is the substrate.
+*Decision:* every inter-agent message is a versioned schema (`contracts/v1/*`).
+The producer validates in `to_wire`, **and the consumer independently validates
+what it receives** (`contracts.models.validate_message`, called at the Judge's
+receipt of an attempt and before documentation) — a malformed/spoofed message is
+rejected at the boundary, not trusted because the producer "should have" checked.
+A single append-only JSONL store keyed by `correlation_id` is the substrate.
 *Consequence:* downstreams integrate against a schema, not a scrape; a breaking
-change is a new schema version, not a silent field rename; the store is the
-Orchestrator's input *and* the dashboard's, so one source drives both.
+change is a new schema version, not a silent field rename; a bad message is
+caught on both sides. Schema evolution policy (additive stays `v1`; breaking
+ships `v2`) is documented with the DB migration policy in `docs/migrations/`.
 
 **ADR-004 — Cost is accounted per attempt and gates the budget breaker.**
 *Context:* a live campaign spends the target's LLM budget; "halt when cost
@@ -148,17 +152,32 @@ path records its own cost.
 breaker actually fires; estimation is deterministic so a replay accounts
 identically and the gate is safe to trust.
 
-**ADR-005 — Regression pass/fail is by invariant, triggered on version change.**
+**ADR-005 — Regression is 3-way (held/regressed/inconclusive), invariant-based,
+and grows itself.**
 *Context:* a reworded-but-still-broken response must not silently "pass"; a new
-deploy must be re-checked before more budget is spent on it.
-*Decision:* a confirmed exploit becomes a deterministic case whose pass condition
-is the *invariant* holding (target defended), not a string match; the
-Orchestrator fires the harness the moment the target's deploy id changes, and the
-harness also replays cross-category neighbours.
-*Consequence:* silent regressions are caught, a fix that trades away a neighbouring
-category's defense is caught, and the suite grows itself as findings are confirmed.
+deploy must be re-checked; and a finding found this run should guard the next one.
+*Decision:* a replay is classified `held` (target *affirmatively* defended — the
+only pass), `regressed` (exploit reproduced), or `inconclusive` (drifted into an
+unclassifiable answer — **not** a pass). Confirmed exploits are promoted into the
+regression suite in-run (consuming `add_to_regression`) and replayed alongside the
+static seeds and cross-category neighbours; the Orchestrator fires the harness the
+moment the target's deploy id changes.
+*Consequence:* a fix that only reworded the leak cannot pass green (`--strict`
+fails CI on drift), a fix that trades away a neighbouring category is caught, and
+the suite grows itself from live findings rather than only static seeds.
 
-**ADR-006 — Build vs. configure: classic web checks are deterministic probes.**
+**ADR-006 — Closed feedback loop: the Judge's verdict drives the next attack.**
+*Context:* the case study's headline capability is taking a partially-successful
+attack and autonomously generating variants without a human choosing what to try.
+*Decision:* on a `partial`/`success` verdict the Red Team refines the *winning*
+attacker turn into up to ten new variants and runs them in the same round
+(`RedTeamAgent.refine`, driven from `run_campaign`); depth is capped and spend is
+bounded by the budget breaker.
+*Consequence:* the loop is genuinely closed — the grader's output feeds the
+generator's next input — and it converges pressure on a weak spot instead of
+firing a fixed, pre-generated fan-out.
+
+**ADR-007 — Build vs. configure: classic web checks are deterministic probes.**
 *Context:* unauth endpoints, forged args, and rate-limit behavior are the wrong
 job for an expensive, drifty LLM.
 *Decision:* those invariants live in a deterministic probe harness
@@ -178,12 +197,17 @@ passes):
 | `redteam_to_judge` `target_metadata.cost_usd` | now populated per attempt (was schema-present but always empty) | additive value; consumers that ignored it are unaffected |
 | `judge_to_documentation` `decision_path` | records deterministic vs llm provenance | optional field; older logs default to `deterministic` |
 | `redteam_to_judge` `attack_source` | records deterministic vs llm generation | optional field; same default |
-| Observability store | new event `type`s: `drift_check`, `regression_report`, `cost` | additive; rollups filter by `type`, so unknown types are ignored by old readers |
-| Eval schema | `observed_behavior` / `result` now populated on seed cases | schema unchanged (fields already defined); additive data |
+| Observability store | new event `type`s: `drift_check`, `regression_report`, `cost`, `escalation` | additive; rollups filter by `type`, so unknown types are ignored by old readers |
+| Observability rollup | `summary().by_version` — pass/fail keyed by target deploy id | additive key; existing consumers ignore it |
+| Report format | `lifecycle` (open → in_progress → resolved) alongside approval `status` | additive field on `runs/*.reports.json` |
+| Eval schema | `observed_behavior` / `result` populated; new `state_corruption` cases + full OWASP A01–A10 / LLM01–LLM10 tags | schema unchanged (fields already defined); additive data |
+| History DB | `+ target_version` column via a tracked in-place migration (schema v1 → v2) | existing DBs upgrade on open, rows preserved (`docs/migrations/`) |
 
-No `v2` was required: every change is a value now being filled or a new event
-type the existing rollups already tolerate. A breaking change would bump the
-schema `const` version and ship `contracts/v2/`.
+No wire-contract `v2` was required: every change is a value now being filled or a
+new event type/field the existing rollups already tolerate. The one place with a
+real migration is the **history database**, which versions its schema and applies
+`ALTER`s in place — see `docs/migrations/README.md`. A breaking wire change would
+bump the message `const` version and ship `contracts/v2/`.
 
 ## 7. Ops / runbook
 

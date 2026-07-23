@@ -32,6 +32,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Schema evolution. The base table is v1; each migration is (to_version, DDL)
+# applied in order, tracked in ``schema_meta`` so it runs exactly once per DB and
+# an existing DB is upgraded in place rather than silently drifting. ALTER TABLE
+# ADD COLUMN is valid in both SQLite and Postgres, so one list covers both
+# backends. See docs/migrations/README.md.
+SCHEMA_VERSION = 2
+_BASE_VERSION = 1
+_MIGRATIONS: list[tuple[int, str]] = [
+    # v1 -> v2: per-version pass/fail breakdown needs the target's deploy id.
+    (2, "ALTER TABLE campaign_snapshots ADD COLUMN target_version TEXT"),
+]
+
+
 def overall_pass_rate(summary: dict[str, Any]) -> float | None:
     """Verdicts-weighted defended-fraction across every coverage cell.
 
@@ -83,8 +96,9 @@ class HistoryStore:
         # Column types chosen to be valid in both SQLite and Postgres; run_id is
         # the natural key (one snapshot per campaign) so no dialect-specific
         # autoincrement is needed. recorded_at is ISO-8601, which sorts
-        # chronologically as text.
-        ddl = (
+        # chronologically as text. This DDL is the v1 baseline; anything added
+        # since ships as a tracked migration below so existing DBs upgrade.
+        base_ddl = (
             "CREATE TABLE IF NOT EXISTS campaign_snapshots ("
             " run_id TEXT PRIMARY KEY,"
             " recorded_at TEXT NOT NULL,"
@@ -98,18 +112,51 @@ class HistoryStore:
         )
         conn = self._connect()
         try:
-            conn.execute(ddl)
+            conn.execute(base_ddl)
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_meta (version INTEGER NOT NULL)")
+            cur = conn.execute("SELECT version FROM schema_meta")
+            row = cur.fetchone()
+            if row is None:
+                # A DB that predates version tracking (or a fresh one) is treated
+                # as the v1 baseline; migrations then bring it to current.
+                current = _BASE_VERSION
+                conn.execute(f"INSERT INTO schema_meta (version) VALUES ({self._ph})",
+                             [current])
+            else:
+                current = int(row[0])
+            for to_version, ddl in _MIGRATIONS:
+                if to_version > current:
+                    try:
+                        conn.execute(ddl)
+                    except Exception:  # noqa: BLE001 — column may already exist
+                        # Idempotent: an ADD COLUMN that already ran (a DB migrated
+                        # out of band) is not an error; the version bump below
+                        # records that we're now at this level.
+                        pass
+                    current = to_version
+            conn.execute(f"UPDATE schema_meta SET version = {self._ph}", [current])
             conn.commit()
+        finally:
+            conn.close()
+
+    def schema_version(self) -> int:
+        conn = self._connect()
+        try:
+            cur = conn.execute("SELECT version FROM schema_meta")
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
         finally:
             conn.close()
 
     # ---- write -------------------------------------------------------------
     def record_snapshot(self, run_id: str, summary: dict[str, Any],
-                        mode: str = "unknown", recorded_at: str | None = None) -> dict[str, Any]:
+                        mode: str = "unknown", recorded_at: str | None = None,
+                        target_version: str | None = None) -> dict[str, Any]:
         """Persist one campaign's completion snapshot, derived from ``summary``.
 
         Idempotent on ``run_id`` (a re-record overwrites), so replaying a run
-        does not double-count. Returns the row that was written.
+        does not double-count. ``target_version`` (the deploy id the run ran
+        against) is stored so trends can be sliced per build. Returns the row.
         """
         row = {
             "run_id": run_id,
@@ -121,9 +168,11 @@ class HistoryStore:
             "cost_usd": float(summary.get("cost_usd", 0.0) or 0.0),
             "pass_rate": overall_pass_rate(summary),
             "coverage_json": json.dumps(summary.get("coverage", [])),
+            "target_version": target_version,
         }
         cols = ("run_id", "recorded_at", "mode", "attempts", "verdicts",
-                "open_findings", "cost_usd", "pass_rate", "coverage_json")
+                "open_findings", "cost_usd", "pass_rate", "coverage_json",
+                "target_version")
         placeholders = ", ".join(self._ph for _ in cols)
         values = [row[c] for c in cols]
         # Upsert on run_id — ON CONFLICT ... EXCLUDED is valid in modern SQLite
@@ -144,7 +193,7 @@ class HistoryStore:
         """Recorded snapshots, oldest first (chronological for a trend line),
         capped to the most recent ``limit``."""
         q = (f"SELECT run_id, recorded_at, mode, attempts, verdicts, open_findings,"
-             f" cost_usd, pass_rate, coverage_json FROM campaign_snapshots"
+             f" cost_usd, pass_rate, coverage_json, target_version FROM campaign_snapshots"
              f" ORDER BY recorded_at DESC LIMIT {self._ph}")
         conn = self._connect()
         try:
@@ -159,6 +208,7 @@ class HistoryStore:
                 "attempts": r[3], "verdicts": r[4], "open_findings": r[5],
                 "cost_usd": r[6], "pass_rate": r[7],
                 "coverage": json.loads(r[8]) if r[8] else [],
+                "target_version": r[9],
             })
         return out
 

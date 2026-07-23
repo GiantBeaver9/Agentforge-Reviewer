@@ -7,6 +7,7 @@ schema files, so a green run here means both sides agree on the wire format.
 Run: pytest agentforge/tests/test_contracts.py -q
 """
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,10 @@ from jsonschema import Draft202012Validator
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts" / "v1"
 EVAL_SCHEMA = ROOT / "evals" / "schema.json"
+
+sys.path.insert(0, str(ROOT / "src"))
+from agentforge.contracts.models import (AttackAttempt, ContractViolation,  # noqa: E402
+                                         TargetMetadata, Turn, validate_message)
 
 
 def _load(path: Path) -> dict:
@@ -128,6 +133,46 @@ def test_missing_required_field_is_rejected():
     del bad["budget"]
     validator = Draft202012Validator(_load(CONTRACTS / "orchestrator_to_redteam.schema.json"))
     assert not validator.is_valid(bad)
+
+
+# ---- 3b. Consumer-side validation: producer output is accepted on receipt,
+#          a malformed message is rejected at the boundary --------------------
+def _wire_attempt() -> dict:
+    return AttackAttempt(
+        directive_id="dir-1", attack_category="prompt_injection",
+        target_surface="chat", attack_technique="seed",
+        turns=[Turn(index=0, role="attacker", content="hi"),
+               Turn(index=1, role="target", content="no")],
+        expected_safe_behavior="stays in scope",
+        target_metadata=TargetMetadata(http_status=200, latency_ms=1.0),
+    ).to_wire()
+
+
+def test_consumer_accepts_producer_output():
+    # A message produced via to_wire() passes independent consumer validation.
+    msg = _wire_attempt()
+    assert validate_message(msg) is msg
+
+
+def test_consumer_rejects_missing_required_field():
+    bad = _wire_attempt()
+    del bad["target_metadata"]
+    with pytest.raises(ContractViolation):
+        validate_message(bad)
+
+
+def test_consumer_rejects_wrong_type_value():
+    bad = _wire_attempt()
+    bad["target_surface"] = "not-a-real-surface"
+    with pytest.raises(ContractViolation):
+        validate_message(bad)
+
+
+def test_aux_events_without_a_contract_pass_through():
+    # Internal events (cost, drift_check, ...) have no wire contract and are not
+    # spuriously rejected.
+    ev = {"type": "cost", "producer": "judge", "cost_usd": 0.01}
+    assert validate_message(ev) is ev
 
 
 # ---- 4. Every eval case on disk conforms to the eval schema ----------------

@@ -139,6 +139,43 @@ class ObservabilityStore:
                 c.uncertains += 1
         return cells
 
+    def coverage_by_version(self) -> dict[str, dict[str, Any]]:
+        """Pass/fail rollup keyed by the target's deploy id (``target_version``).
+
+        Answers the case-study ask "break results down by system version": each
+        attempt records the version it ran against; joining verdicts to attempts
+        gives per-build defended-rate, so a regression across a deploy is visible
+        as a pass_rate drop for the new version. ``unknown`` collects attempts
+        whose target did not report a version (e.g. the offline mock).
+        """
+        attempts = {a["attempt_id"]: a for a in self._by_type(ATTEMPT)}
+
+        def _blank() -> dict[str, Any]:
+            return {"attempts": 0, "verdicts": 0, "successes": 0,
+                    "failures": 0, "partials": 0, "uncertains": 0}
+
+        out: dict[str, dict[str, Any]] = {}
+
+        def _ver(a: dict[str, Any]) -> str:
+            return (a.get("target_metadata") or {}).get("target_version") or "unknown"
+
+        for a in attempts.values():
+            out.setdefault(_ver(a), _blank())["attempts"] += 1
+        for v in self._by_type(VERDICT):
+            a = attempts.get(v.get("attempt_id"))
+            if a is None:
+                continue
+            row = out.setdefault(_ver(a), _blank())
+            row["verdicts"] += 1
+            outcome = v.get("verdict")
+            key = {"success": "successes", "failure": "failures",
+                   "partial": "partials"}.get(outcome, "uncertains")
+            row[key] += 1
+        for row in out.values():
+            row["pass_rate"] = (row["failures"] / row["verdicts"]
+                                if row["verdicts"] else None)
+        return out
+
     def open_findings(self) -> list[dict[str, Any]]:
         """Confirmed exploits: verdicts with ``success`` (target broke), newest
         first, ordered by severity then confidence."""
@@ -238,4 +275,5 @@ class ObservabilityStore:
                 for c in sorted(cov.values(),
                                 key=lambda x: (x.attack_category, x.target_surface))
             ],
+            "by_version": self.coverage_by_version(),
         }

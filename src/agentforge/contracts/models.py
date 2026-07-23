@@ -29,6 +29,42 @@ def _validator(name: str) -> Draft202012Validator:
     return Draft202012Validator(json.loads((_CONTRACTS / name).read_text()))
 
 
+# Wire ``type`` -> schema file. Only the four inter-agent contracts are on the
+# wire; internal/aux events (cost, drift_check, regression_report, escalation)
+# have no cross-agent contract and are passed through unvalidated by design.
+_TYPE_TO_SCHEMA = {
+    "orchestrator_to_redteam": "orchestrator_to_redteam.schema.json",
+    "redteam_to_judge": "redteam_to_judge.schema.json",
+    "judge_to_documentation": "judge_to_documentation.schema.json",
+    "error": "errors.schema.json",
+}
+
+
+class ContractViolation(ValueError):
+    """A message failed schema validation at a consumer boundary."""
+
+
+def validate_message(msg: dict[str, Any]) -> dict[str, Any]:
+    """Validate a wire message against its contract **on receipt**.
+
+    Producers already validate in ``to_wire``; this is the independent
+    consumer-side check (ARCHITECTURE.md §"Contracts"): an agent/store validates
+    what it *receives*, so a malformed or spoofed message is rejected at the
+    boundary rather than trusted because "the producer should have validated it".
+    Returns the message on success; raises :class:`ContractViolation` otherwise.
+    Messages whose ``type`` has no wire contract pass through unchanged.
+    """
+    schema = _TYPE_TO_SCHEMA.get(msg.get("type"))
+    if schema is None:
+        return msg
+    try:
+        _validator(schema).validate(msg)
+    except Exception as exc:  # jsonschema.ValidationError and friends
+        raise ContractViolation(
+            f"{msg.get('type')} message failed {schema}: {exc}") from exc
+    return msg
+
+
 class AttackCategory(str, Enum):
     prompt_injection = "prompt_injection"
     data_exfiltration = "data_exfiltration"

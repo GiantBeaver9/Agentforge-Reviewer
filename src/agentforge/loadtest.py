@@ -65,6 +65,30 @@ class LoadStats:
         }
 
 
+def resource_snapshot() -> dict:
+    """Platform-side (load-generator) CPU/memory, from the stdlib — no psutil.
+
+    The target's CPU/mem isn't visible over HTTP, so this profiles *our* side: the
+    peak RSS and CPU seconds this process spent generating the load, plus the host
+    1-minute load average. Captured before/after a sweep, the deltas show how much
+    the harness itself costs to drive a given concurrency.
+    """
+    import os
+    import resource
+    ru = resource.getrusage(resource.RUSAGE_SELF)
+    # ru_maxrss is KiB on Linux (bytes on macOS); we run on Linux (KiB).
+    snap = {
+        "maxrss_mb": round(ru.ru_maxrss / 1024, 1),
+        "cpu_user_s": round(ru.ru_utime, 3),
+        "cpu_sys_s": round(ru.ru_stime, 3),
+    }
+    try:
+        snap["load_avg_1m"] = round(os.getloadavg()[0], 2)
+    except (OSError, AttributeError):  # not available on some platforms
+        snap["load_avg_1m"] = None
+    return snap
+
+
 def _http_client(timeout: float = 30.0):
     import os
     import httpx

@@ -81,6 +81,49 @@ def _load_ground_truth() -> list[dict]:
     return json.loads(gt.read_text()) if gt.exists() else []
 
 
+# Confirmed exploits promoted from prior campaigns live here (JSONL, one
+# regression case per line). Under runs/ it is ephemeral like every other run
+# artifact; attach a volume (DEPLOY.md) to make promotion durable across deploys.
+DISCOVERED_PATH = RUNS_DIR / "discovered_regression.jsonl"
+
+
+def _load_discovered_regression_cases() -> list[SeedCase]:
+    if not DISCOVERED_PATH.exists():
+        return []
+    out, seen = [], set()
+    for line in DISCOVERED_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        d = json.loads(line)
+        if d.get("id") in seen:
+            continue
+        seen.add(d.get("id"))
+        out.append(SeedCase.from_regression_case(d))
+    return out
+
+
+def _persist_discovered(cases: list[dict]) -> int:
+    """Append newly-confirmed regression cases, deduped by id. Returns #added."""
+    if not cases:
+        return 0
+    RUNS_DIR.mkdir(exist_ok=True)
+    existing = set()
+    if DISCOVERED_PATH.exists():
+        for line in DISCOVERED_PATH.read_text().splitlines():
+            if line.strip():
+                existing.add(json.loads(line).get("id"))
+    added = 0
+    with DISCOVERED_PATH.open("a") as fh:
+        for c in cases:
+            if c.get("id") in existing:
+                continue
+            existing.add(c.get("id"))
+            fh.write(json.dumps(c) + "\n")
+            added += 1
+    return added
+
+
 def _make_target(args):
     cfg = cfgmod.load()
     if args.dry_run:
@@ -145,13 +188,28 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     orch = OrchestratorAgent(store, CampaignState(
         max_attempts=args.max_attempts * args.rounds, max_usd=args.max_usd))
 
-    result = run_campaign(
-        target=target, seeds=seeds, store=store, orchestrator=orch,
-        judge=_build_judge(args, cfg), redteam_llm=_build_redteam_llm(args, cfg),
-        pinned_pid=args.pid, max_rounds=args.rounds,
-        max_attempts_per_round=args.max_attempts,
-        ground_truth=_load_ground_truth(),
-    )
+    result = None
+    if getattr(args, "use_langgraph", False):
+        try:
+            from agentforge.pipeline import run_via_langgraph
+            print("[langgraph] executing via the StateGraph runtime "
+                  "(same agents/edges; adaptive+promotion are plain-runner only)")
+            result = run_via_langgraph(
+                target=target, seeds=seeds, store=store, orchestrator=orch,
+                judge=_build_judge(args, cfg), pinned_pid=args.pid,
+                max_rounds=args.rounds, max_attempts_per_round=args.max_attempts)
+        except ImportError:
+            print("[langgraph] not installed; falling back to the canonical "
+                  "plain-Python runner (pip install langgraph to use the graph)")
+
+    if result is None:
+        result = run_campaign(
+            target=target, seeds=seeds, store=store, orchestrator=orch,
+            judge=_build_judge(args, cfg), redteam_llm=_build_redteam_llm(args, cfg),
+            pinned_pid=args.pid, max_rounds=args.rounds,
+            max_attempts_per_round=args.max_attempts,
+            ground_truth=_load_ground_truth(),
+        )
     if result.drift is not None:
         gate = "PASS" if result.drift["passed"] else "FAIL"
         print(f"  judge-drift gate [{gate}] "
@@ -159,8 +217,16 @@ def cmd_campaign(args: argparse.Namespace) -> int:
               f"(rubric {result.drift['rubric_version']})")
     if result.regression is not None:
         rs = result.regression.summary()
-        print(f"  regression (target changed): {rs['passed']}/{rs['total']} held, "
-              f"{rs['regressed']} regressed {rs['regressed_cases'] or ''}")
+        print(f"  regression (target changed): {rs['held']}/{rs['total']} held, "
+              f"{rs['regressed']} regressed, {rs['inconclusive']} inconclusive "
+              f"{rs['regressed_cases'] or ''}")
+    if result.adaptive_attempts:
+        print(f"  adaptive: {result.adaptive_attempts} feedback-driven variant(s) "
+              f"spawned off partial/successful attacks")
+    if result.regression_cases_discovered:
+        added = _persist_discovered(result.regression_cases_discovered)
+        print(f"  promoted {len(result.regression_cases_discovered)} confirmed "
+              f"exploit(s) to the regression suite (+{added} new -> {DISCOVERED_PATH.name})")
 
     # Persist reports for the Documentation deliverable.
     reports_path = RUNS_DIR / f"{run_id}.reports.json"
@@ -172,7 +238,8 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     try:
         from agentforge.observability.history import HistoryStore
         hist = HistoryStore(sqlite_path=RUNS_DIR / "history.db")
-        hist.record_snapshot(run_id, summary, mode="dry-run" if args.dry_run else "live")
+        hist.record_snapshot(run_id, summary, mode="dry-run" if args.dry_run else "live",
+                             target_version=orch.state.last_target_version)
         print(f"  history -> {hist.backend} snapshot for {run_id}")
     except Exception as exc:  # noqa: BLE001
         print(f"  history -> skipped ({type(exc).__name__}: {exc})")
@@ -218,42 +285,87 @@ def cmd_regression(args: argparse.Namespace) -> int:
         print("no regression-flagged seed cases on an LLM surface", file=sys.stderr)
         return 2
 
+    # Also replay any confirmed exploits discovered in prior campaigns (promoted
+    # into the regression suite), not just the static seeds.
+    discovered = _load_discovered_regression_cases()
+
     harness = RegressionHarness(target=target, judge=_build_judge(args, cfg),
                                 pinned_pid=args.pid)
-    report = (harness.replay_with_siblings(cases, cases, cross_category=True)
-              if args.cross_category else harness.replay(cases))
+    all_cases = cases + discovered
+    report = (harness.replay_with_siblings(all_cases, all_cases, cross_category=True)
+              if args.cross_category else harness.replay(all_cases))
     summary = report.summary()
 
     RUNS_DIR.mkdir(exist_ok=True)
     out = RUNS_DIR / f"regression-{uuid4().hex[:8]}.json"
     out.write_text(json.dumps({"summary": summary,
-                               "results": [r.__dict__ for r in report.results]}, indent=2))
+                               "results": [_result_row(r) for r in report.results]}, indent=2))
 
-    print(f"replayed {summary['total']} case(s): {summary['passed']} held, "
-          f"{summary['regressed']} regressed, {summary['unreachable']} unreachable")
+    if discovered:
+        print(f"  (+{len(discovered)} confirmed-exploit case(s) promoted from prior runs)")
+    print(f"replayed {summary['total']} case(s): {summary['held']} held, "
+          f"{summary['regressed']} regressed, {summary['inconclusive']} inconclusive, "
+          f"{summary['unreachable']} unreachable")
+    flags = {"held": "HELD   ", "regressed": "REGRESS", "inconclusive": "INCONCL",
+             "unreachable": "SKIP   "}
     for r in report.results:
-        flag = "PASS " if r.passed else ("SKIP " if r.unreachable else "REGRESS")
-        print(f"  [{flag}] {r.case_id:14} {r.attack_category:26} verdict={r.verdict}")
+        print(f"  [{flags.get(r.status, r.status)}] {r.case_id:14} "
+              f"{r.attack_category:26} verdict={r.verdict}")
     if summary["regressed_cases"]:
         print(f"  REGRESSED: {summary['regressed_cases']}")
+    if summary["inconclusive_cases"]:
+        print(f"  INCONCLUSIVE (drifted, not a pass): {summary['inconclusive_cases']}")
     print(f"  -> {out}")
-    # Non-zero on a real regression so CI/deploy gating can block on it.
-    return 1 if summary["regressed"] > 0 else 0
+    # Non-zero on a real regression so CI/deploy gating can block on it. With
+    # --strict, an inconclusive drift also fails (a build that can't be confirmed
+    # fixed should not gate green).
+    if summary["regressed"] > 0:
+        return 1
+    if args.strict and summary["inconclusive"] > 0:
+        return 1
+    return 0
+
+
+def _result_row(r) -> dict:
+    return {"case_id": r.case_id, "attack_category": r.attack_category,
+            "status": r.status, "verdict": r.verdict, "detail": r.detail}
 
 
 def cmd_loadtest(args: argparse.Namespace) -> int:
-    from agentforge.loadtest import sweep
+    from agentforge.loadtest import resource_snapshot, sweep
     cfg = cfgmod.load()
-    print(f"[loadtest] {args.n} req/level against {cfg.target.base_url} (health.php)")
-    results = sweep(cfg.target.base_url, n=args.n)
+    default_path = ("/interface/modules/custom_modules/"
+                    "oe-module-clinical-copilot/public/health.php")
+    path = args.path or default_path
+    surface = "health.php" if path == default_path else path
+    print(f"[loadtest] {args.n} req/level against {cfg.target.base_url} ({surface})")
+    if args.path:
+        print("  note: custom --path — ensure it is safe to flood (an LLM surface "
+              "spends the target's budget); prefer an unauth/cheap endpoint.")
+
+    before = resource_snapshot()
+    results = sweep(cfg.target.base_url, path=path, n=args.n)
+    after = resource_snapshot()
+    # Platform-side (load-generator) CPU/mem cost of driving the sweep.
+    platform = {
+        "maxrss_mb": after["maxrss_mb"],
+        "cpu_user_s": round(after["cpu_user_s"] - before["cpu_user_s"], 3),
+        "cpu_sys_s": round(after["cpu_sys_s"] - before["cpu_sys_s"], 3),
+        "load_avg_1m": after["load_avg_1m"],
+    }
+
     RUNS_DIR.mkdir(exist_ok=True)
     out = RUNS_DIR / f"loadtest-{uuid4().hex[:8]}.json"
-    out.write_text(json.dumps([s.summary() for s in results], indent=2))
+    out.write_text(json.dumps({"levels": [s.summary() for s in results],
+                               "platform_resource": platform}, indent=2))
     print(f"  {'conc':>4} {'rps':>8} {'p50':>7} {'p95':>7} {'p99':>7} {'errs':>5}")
     for s in results:
         m = s.summary()["latency_ms"]
         print(f"  {s.concurrency:>4} {s.throughput_rps:>8} {m['p50']:>7} "
               f"{m['p95']:>7} {m['p99']:>7} {s.errors:>5}")
+    print(f"  platform: peak RSS {platform['maxrss_mb']} MB, "
+          f"CPU {platform['cpu_user_s']}s user / {platform['cpu_sys_s']}s sys, "
+          f"load1m {platform['load_avg_1m']}")
     print(f"  -> {out}")
     return 0
 
@@ -331,6 +443,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="refine uncertain/partial verdicts with the JUDGE_* model")
     cp.add_argument("--use-llm-redteam", action="store_true",
                     help="generate mutation variants with the REDTEAM_* model")
+    cp.add_argument("--use-langgraph", action="store_true",
+                    help="execute via the LangGraph StateGraph runtime if installed "
+                         "(falls back to the plain runner otherwise)")
     cp.set_defaults(func=cmd_campaign)
 
     ju = sub.add_parser("judge", help="(re)judge a captured attempts file offline")
@@ -346,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     add_target_opts(rg)
     rg.add_argument("--cross-category", action="store_true",
                     help="also replay a bounded sample of other categories (catch cross-category regressions)")
+    rg.add_argument("--strict", action="store_true",
+                    help="also fail (non-zero) on an inconclusive/drifted replay, not only a regression")
     rg.add_argument("--use-llm-judge", action="store_true",
                     help="refine uncertain/partial verdicts with the JUDGE_* model")
     rg.set_defaults(func=cmd_regression)
@@ -357,6 +474,9 @@ def main(argv: list[str] | None = None) -> int:
 
     lt = sub.add_parser("loadtest", help="baseline load test of the cheap unauth surface")
     lt.add_argument("--n", type=int, default=100, help="requests per concurrency level")
+    lt.add_argument("--path", default=None,
+                    help="target path to hit (default: health.php); a custom path "
+                         "lets you profile another surface — use with care on paid ones")
     lt.set_defaults(func=cmd_loadtest)
 
     db = sub.add_parser("dashboard", help="print the observability rollup for a run")

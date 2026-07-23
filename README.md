@@ -15,9 +15,9 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 - **Threat model:** [`THREAT_MODEL.md`](THREAT_MODEL.md) — the attack surface
 - **Users:** [`USERS.md`](USERS.md)
 - **Contracts:** [`contracts/`](contracts/) — versioned inter-agent JSON Schemas
-- **Seed attack suite:** [`evals/`](evals/) — 22 cases across 5 categories, OWASP
-  web A01/A03/A04/A05/A06/A07/A09/A10 + LLM01/02/04/05/06/07/08, each carrying its
-  observed live/probe result
+- **Seed attack suite:** [`evals/`](evals/) — 29 cases across all 5 attack
+  categories (incl. `state_corruption`), full OWASP coverage — web A01–A10 and
+  LLM01–LLM10 — each carrying its observed live/probe result
 - **Deploy it standalone:** [`DEPLOY.md`](DEPLOY.md) — run AgentForge as its own
   Railway service, pointed at any OpenEMR instance via env vars
 - **Continue this build:** [`HANDOFF.md`](HANDOFF.md)
@@ -29,23 +29,27 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | Threat model | ✅ complete |
 | Inter-agent contracts (v1) + tests | ✅ complete, tests green |
 | Seed eval suite (5 categories, OWASP-tagged) | ✅ complete |
-| Red Team agent | ✅ **verified live** against the deployed target |
+| Red Team agent | ✅ **verified live**; **closed feedback loop** — Judge verdict drives ~10 autonomous variants off a partial/success |
 | Target HTTP client (OpenEMR auth) | ✅ **auth + CSRF handshake verified live** |
 | Judge agent (rubric `1.0.0` + ground-truth drift check) | ✅ complete, tests green |
 | Orchestrator (coverage/severity scoring + budget/halt) | ✅ complete, tests green |
-| Documentation agent (report + regression case + human gate) | ✅ complete, tests green |
-| Regression harness (invariant replay + siblings + cross-category) | ✅ complete; **triggered in-loop on version change + `regression` CLI** |
+| Documentation agent (report + regression case + human gate + lifecycle) | ✅ complete; confirmed exploits **promoted into the live regression suite** |
+| Regression harness (invariant replay + siblings + cross-category) | ✅ **3-way** held/regressed/inconclusive (uncertain ≠ pass); triggered in-loop + `regression` CLI |
 | Cost accounting (per-attempt estimate → budget breaker) | ✅ complete; drives `budget_exceeded` halt + dashboard cost |
 | Judge-drift gate (`check_ground_truth`) enforced each campaign | ✅ complete, tests green |
-| Observability store (append-only, deterministic rollups) | ✅ complete, tests green |
-| LangGraph pipeline wiring (4 agents over typed edges) | ✅ complete (`pipeline.py`) |
+| Contract validation (producer **and** consumer on receipt) | ✅ complete, tests green |
+| Observability (append-only rollups + **per-version** pass/fail) | ✅ complete, tests green |
+| History store (SQLite/Postgres) with **in-place schema migrations** | ✅ complete; `docs/migrations/` |
+| LangGraph runtime (4 agents over typed edges) | ✅ optional; invocable via `campaign --use-langgraph`, plain runner canonical |
 
-All four agents and the deterministic substrate are implemented — **96 passing
+All four agents and the deterministic substrate are implemented — **115 passing
 tests** — and the full loop has been run live against the deployed co-pilot
-(which defended the seeded attacks). The regression harness, cost-based budget
-breaker, and Judge-drift gate are now wired into the running campaign (not just
+(which defended the seeded attacks). The closed feedback loop, exploit promotion,
+cost-based budget breaker, 3-way regression, consumer-side contract validation,
+and Judge-drift gate are all wired into the running campaign (not just
 unit-tested); see [`docs/INTEGRATION_PACKET.md`](docs/INTEGRATION_PACKET.md) for
-ADRs and a single end-to-end correlation-id trace.
+ADRs and a single end-to-end correlation-id trace, and
+[`docs/migrations/`](docs/migrations/) for the schema-versioning policy.
 
 ## Local GUI (web dashboard)
 
@@ -94,6 +98,16 @@ PYTHONPATH=src python -m agentforge.cli probe
 # LLM-generated Red Team mutations (both fail soft to the deterministic core):
 PYTHONPATH=src python -m agentforge.cli campaign --use-llm-judge --use-llm-redteam
 ```
+
+> **Deterministic-first is deliberate, not a gap.** The default run is $0,
+> reproducible, and needs no model or egress — the deterministic cores (rubric,
+> scoring, mutation operators, probes, regression) carry a full campaign so CI and
+> egress-restricted sandboxes work out of the box. The LLM path is a real opt-in
+> (`--use-llm-*`), and it is **exercised end-to-end by the test suite** through the
+> actual adapters over a fake transport (`tests/test_llm_e2e.py`), not only by
+> stubbing `.classify`/`.variants`. Turn the models on where judgement quality pays
+> (see `docs/COST_ANALYSIS.md`); the deterministic path is the safety net, not a
+> placeholder.
 
 ## Reports & analysis (`docs/`)
 
@@ -152,5 +166,6 @@ agentforge/
     loadtest.py          # baseline load test of the cheap unauth surface
     cli.py               # redteam | campaign | judge | regression | dashboard | probe | web | loadtest
   tests/                 # contracts, models, redteam, observability, judge, documentation,
-                         # orchestrator+pipeline, regression, wiring, fix-validation (96 green)
+                         # orchestrator+pipeline, regression, wiring, adaptive,
+                         # llm-e2e, versioning/lifecycle, fix-validation (115 green)
 ```

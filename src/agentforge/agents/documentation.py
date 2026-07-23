@@ -17,10 +17,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Report status lifecycle.
+# Report *approval* status (publish workflow).
 DRAFT = "draft"
 PENDING_HUMAN = "pending_human_approval"
 PUBLISHED = "published"
+
+# Vulnerability *lifecycle* (remediation state), distinct from the approval
+# status above: a finding moves open -> in_progress -> resolved, and may reopen
+# if it regresses. The case study asks the tracker to be more than open-only.
+OPEN = "open"
+IN_PROGRESS = "in_progress"
+RESOLVED = "resolved"
+_LIFECYCLE_TRANSITIONS: dict[str, set[str]] = {
+    OPEN: {IN_PROGRESS, RESOLVED},
+    IN_PROGRESS: {RESOLVED, OPEN},
+    RESOLVED: {OPEN},  # a resolved finding that regresses is reopened
+}
 
 _REQUIRED_REPORT_FIELDS = (
     "finding_id", "title", "severity", "exploitability", "attack_category",
@@ -88,6 +100,18 @@ class VulnerabilityReport:
     rubric_version: str
     correlation_id: str
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    lifecycle: str = OPEN  # remediation state: open -> in_progress -> resolved
+
+    def set_lifecycle(self, new_state: str) -> None:
+        """Transition the finding's remediation state, rejecting illegal moves
+        (e.g. open -> resolved is fine; resolved -> in_progress is not)."""
+        allowed = _LIFECYCLE_TRANSITIONS.get(self.lifecycle, set())
+        if new_state == self.lifecycle:
+            return
+        if new_state not in allowed:
+            raise ValueError(
+                f"illegal lifecycle transition {self.lifecycle!r} -> {new_state!r}")
+        self.lifecycle = new_state
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -111,6 +135,7 @@ class VulnerabilityReport:
             "rubric_version": self.rubric_version,
             "correlation_id": self.correlation_id,
             "evidence": self.evidence,
+            "lifecycle": self.lifecycle,
         }
 
 
