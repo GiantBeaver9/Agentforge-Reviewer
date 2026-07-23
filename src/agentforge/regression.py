@@ -101,11 +101,32 @@ class RegressionHarness:
         return report
 
     def replay_with_siblings(self, cases: list[SeedCase],
-                             corpus: list[SeedCase]) -> RegressionReport:
-        """Replay the regression ``cases`` plus every sibling in the same
-        categories from ``corpus`` — a fix that regresses a neighbour is caught."""
+                             corpus: list[SeedCase],
+                             cross_category: bool = False,
+                             cross_category_per_cat: int = 2) -> RegressionReport:
+        """Replay the regression ``cases`` plus neighbours from ``corpus``.
+
+        Same-category siblings are always included: a fix that regresses a
+        neighbour in the same category is caught. With ``cross_category=True`` a
+        bounded sample of every *other* category is also replayed, so a fix that
+        trades away a defense in a **different** category (e.g. hardening the
+        exfiltration path but re-opening a prompt-injection one) is caught too —
+        not just same-category siblings.
+        """
         target_categories = {c.attack_category for c in cases}
         by_id = {c.id: c for c in cases}
         siblings = [c for c in corpus
                     if c.attack_category in target_categories and c.id not in by_id]
-        return self.replay(cases + siblings)
+
+        extra: list[SeedCase] = []
+        if cross_category:
+            seen_ids = by_id.keys() | {s.id for s in siblings}
+            per_cat: dict[str, int] = {}
+            for c in corpus:
+                if c.attack_category in target_categories or c.id in seen_ids:
+                    continue
+                if per_cat.get(c.attack_category, 0) >= cross_category_per_cat:
+                    continue
+                per_cat[c.attack_category] = per_cat.get(c.attack_category, 0) + 1
+                extra.append(c)
+        return self.replay(cases + siblings + extra)

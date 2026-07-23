@@ -53,6 +53,54 @@ Two workload knobs drive the totals:
 | 10,000 | $19.60 | $23.80 | $40.60 |
 | 100,000 | $196.00 | $238.00 | $406.00 |
 
+## Architecture changes by scale tier (not a flat per-attempt line)
+
+The $0.0024/attempt figure above is a *unit price*, not an operating plan — it is
+deliberately linear so the model is auditable, but the **architecture changes at
+each tier**, and those changes (not the per-token price) are what keep the bill
+sublinear. What you *build* differs at 100 vs 100K:
+
+| Tier | What it is | Architecture at this tier | Dominant cost | Per-attempt trend |
+|---|---|---|---|---|
+| **100** | one capped live campaign / a demo | Everything inline, single process. Deterministic Judge only (`u=0`), no LLM Judge, Red Team local. Cost is the *target's* LLM spend, not AgentForge's. | target-side LLM | ~$0.002 (target), ≈$0 platform |
+| **1K** | a nightly against staging | Add the **LLM Judge on the uncertain fraction only** (`u≈20%`), keep Red Team local. Batch attempts per cell; reuse one auth/CSRF session across the run. Persist runs to Postgres history. | Judge (20% of 1K) | flat, but 80% of attempts never touch a frontier model |
+| **10K** | continuous against one target | **Cache + dedupe before spend:** hash each (attack_technique, seed, cell) and skip re-running an attempt whose transcript-shape was already judged; the Orchestrator's `no_findings_in_window` halt sheds dead cells so budget concentrates where the target is weak. Move the Red Team fully **local** (GPU) — hosted token cost stops mattering. Judge escalation batched. | Judge on the *residual* uncertain set | **falls** — dedupe + halt remove repeat spend |
+| **100K+** | fleet: many targets / always-on | **Two-stage Judge** (cheap open model triages every uncertain case; frontier model only on the open-model's own "unsure"), so frontier calls scale with `attempts × u × u'` not `attempts × u`. Shard campaigns per target across workers (the store is per-`correlation_id`, so this parallelizes with no shared state). Reserve/commit pricing or BYOK to zero the platform fee. Alert on cost-per-finding, not raw spend. | frontier Judge on `u·u'` (a few %) | **lowest per-attempt** — the frontier model becomes a rounding error |
+
+Concretely: *at 10K do X* = turn on transcript-shape dedupe and push the Red Team
+onto local hardware; *at 100K do Y* = split the Judge into a cheap-triage →
+frontier-confirm cascade and shard by target. Neither is a knob on the linear
+model — they are different execution graphs, and each one bends the curve down.
+
+The one thing that is **not** a tier change: independence. The generator ≠ grader
+rule holds at every tier (a two-stage Judge still uses a different family than the
+Red Team), because it is a correctness property, not a cost optimization.
+
+## Development spend to date
+
+Building AgentForge cost **≈ $0 in model spend**. The number is small enough to
+state plainly and it is a design outcome, not luck:
+
+- **LLM API spend during development: ~$0.** The entire platform is built on
+  deterministic cores (Judge rubric, Orchestrator scoring, Red Team mutation
+  operators, probes, regression replay), and the sandbox that built it has
+  **external LLM/OpenRouter egress blocked** (docs/SECURITY_SCAN.md) — so no
+  frontier tokens were ever spent to develop or test it. The 93-test suite runs
+  fully offline against `MockTargetClient`.
+- **Target-side spend during live validation: single-digit dollars.** Live
+  end-to-end runs against the deployed co-pilot were capped (`--rounds 2
+  --max-attempts 4`, ≤18 attempts each, a handful of runs). At the target's own
+  per-attempt LLM cost that is on the order of **a few dollars total**, bounded
+  by the target's `$10/hr / $50/day` breaker — we never approached it.
+- **The only non-zero optional line** is if you *choose* to run the LLM Judge or
+  LLM Red Team live; on the open/mid-tier models in the table that is cents per
+  campaign. The shipped default spends nothing.
+
+So the honest dev-spend figure is **≈ $0 in AI, a few dollars of target budget**
+— which is the whole point of a deterministic-first design: you can build and
+regression-guard the entire adversarial platform before spending a token, and
+turn the models on only where judgement quality actually pays for itself.
+
 ## What if the Red Team were also a frontier model?
 
 The single biggest lever is keeping the Red Team local. If it ran on a frontier

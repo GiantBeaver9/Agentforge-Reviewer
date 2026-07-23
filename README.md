@@ -4,12 +4,20 @@ A multi-agent system that continuously discovers, evaluates, documents, and
 regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 (`oe-module-clinical-copilot`).
 
-- **Target under test:** https://abundant-art-production-d560.up.railway.app
+- **Target under test (live):** https://abundant-art-production-d560.up.railway.app
+- **AgentForge platform:** **not** hosted at a public URL by default — it is the
+  *attacker*, so it runs locally (`… cli` / `… web` dashboard) or as your own
+  private service. Only the **target** is a standing deployment; stand AgentForge
+  up yourself in minutes via [`DEPLOY.md`](DEPLOY.md) (Railway/Docker), then reach
+  it at the URL your host assigns. Deliberately not left publicly running: an
+  open panel can launch live campaigns, so it ships auth-gated and self-hosted.
 - **Architecture:** [`ARCHITECTURE.md`](ARCHITECTURE.md) — the 4-agent design
 - **Threat model:** [`THREAT_MODEL.md`](THREAT_MODEL.md) — the attack surface
 - **Users:** [`USERS.md`](USERS.md)
 - **Contracts:** [`contracts/`](contracts/) — versioned inter-agent JSON Schemas
-- **Seed attack suite:** [`evals/`](evals/) — 17 cases across 5 categories
+- **Seed attack suite:** [`evals/`](evals/) — 22 cases across 5 categories, OWASP
+  web A01/A03/A04/A05/A06/A07/A09/A10 + LLM01/02/04/05/06/07/08, each carrying its
+  observed live/probe result
 - **Deploy it standalone:** [`DEPLOY.md`](DEPLOY.md) — run AgentForge as its own
   Railway service, pointed at any OpenEMR instance via env vars
 - **Continue this build:** [`HANDOFF.md`](HANDOFF.md)
@@ -26,15 +34,18 @@ regression-guards vulnerabilities in the OpenEMR **Clinical Co-Pilot**
 | Judge agent (rubric `1.0.0` + ground-truth drift check) | ✅ complete, tests green |
 | Orchestrator (coverage/severity scoring + budget/halt) | ✅ complete, tests green |
 | Documentation agent (report + regression case + human gate) | ✅ complete, tests green |
-| Regression harness (invariant replay + siblings) | ✅ complete, tests green |
+| Regression harness (invariant replay + siblings + cross-category) | ✅ complete; **triggered in-loop on version change + `regression` CLI** |
+| Cost accounting (per-attempt estimate → budget breaker) | ✅ complete; drives `budget_exceeded` halt + dashboard cost |
+| Judge-drift gate (`check_ground_truth`) enforced each campaign | ✅ complete, tests green |
 | Observability store (append-only, deterministic rollups) | ✅ complete, tests green |
 | LangGraph pipeline wiring (4 agents over typed edges) | ✅ complete (`pipeline.py`) |
 
-All four agents and the deterministic substrate are implemented — **70 passing
+All four agents and the deterministic substrate are implemented — **96 passing
 tests** — and the full loop has been run live against the deployed co-pilot
-(which defended the seeded attacks). Remaining work is submission packaging
-(cost analysis, triage exercise, ATO/load evidence, demo) — see
-[`HANDOFF.md`](HANDOFF.md).
+(which defended the seeded attacks). The regression harness, cost-based budget
+breaker, and Judge-drift gate are now wired into the running campaign (not just
+unit-tested); see [`docs/INTEGRATION_PACKET.md`](docs/INTEGRATION_PACKET.md) for
+ADRs and a single end-to-end correlation-id trace.
 
 ## Local GUI (web dashboard)
 
@@ -88,7 +99,8 @@ PYTHONPATH=src python -m agentforge.cli campaign --use-llm-judge --use-llm-redte
 
 - [`docs/VULNERABILITY_REPORTS.md`](docs/VULNERABILITY_REPORTS.md) — 3 confirmed
   live findings (info disclosure ×2, rate-limit fail-open) + resilience summary.
-- [`docs/COST_ANALYSIS.md`](docs/COST_ANALYSIS.md) — AI spend at 100/1K/10K/100K.
+- [`docs/COST_ANALYSIS.md`](docs/COST_ANALYSIS.md) — AI spend at 100/1K/10K/100K,
+  per-tier architecture changes, and dev-spend to date (~$0 AI).
 - [`docs/TRIAGE_EXERCISE.md`](docs/TRIAGE_EXERCISE.md) — 10-finding triage pass.
 - [`docs/LOAD_TEST.md`](docs/LOAD_TEST.md) — baseline perf + 100-req load test + bottleneck.
 - [`docs/ATO_EVIDENCE.md`](docs/ATO_EVIDENCE.md) — ATO-style control/evidence packet.
@@ -133,11 +145,12 @@ agentforge/
     agents/orchestrator.py  # Orchestrator: scoring + budget/halt + regression trigger
     agents/llm.py        # optional LLM adapters for Judge (.classify) + Red Team (.variants)
     probes.py            # deterministic HTTP probes (unauth surface, IDOR, rate-limit)
-    regression.py        # invariant-based regression replay
-    pipeline.py          # wires the 4 agents (LangGraph-compatible)
+    costs.py             # deterministic per-attempt cost model (budget breaker input)
+    regression.py        # invariant-based regression replay (+ cross-category)
+    pipeline.py          # wires the 4 agents (LangGraph-compatible) + drift/regression/cost gates
     web.py               # local web dashboard (stdlib only) — GUI control panel
     loadtest.py          # baseline load test of the cheap unauth surface
-    cli.py               # redteam | campaign | judge | dashboard | probe | web | loadtest
-  tests/                 # contracts, models, redteam, observability, judge,
-                         # documentation, orchestrator+pipeline, regression (70 green)
+    cli.py               # redteam | campaign | judge | regression | dashboard | probe | web | loadtest
+  tests/                 # contracts, models, redteam, observability, judge, documentation,
+                         # orchestrator+pipeline, regression, wiring, fix-validation (96 green)
 ```

@@ -18,6 +18,7 @@ import base64
 from dataclasses import dataclass
 from typing import Callable
 
+from .. import costs
 from ..contracts.models import (AttackAttempt, AttackCategory, TargetMetadata,
                                 TargetSurface, Turn)
 from ..target.client import TargetClient, TargetUnreachable
@@ -133,9 +134,14 @@ class RedTeamAgent:
         except TargetUnreachable:
             return None  # Orchestrator surfaces target_unreachable separately
 
+        wire_turns = [t.model_dump(exclude_none=True) for t in turns]
         meta = TargetMetadata(
             http_status=last.http_status if last else 0,
             latency_ms=last.latency_ms if last else 0.0,
+            # Deterministic per-attempt spend estimate so the dashboard cost
+            # metric is real and the Orchestrator's budget breaker can halt on
+            # accumulated cost (costs.py; ARCHITECTURE.md §"Cost & scale").
+            cost_usd=costs.attempt_cost(wire_turns, attack_source=attack_source),
             target_version=(last.raw or {}).get("target_version") if last and last.raw else None,
         )
         attempt = AttackAttempt(

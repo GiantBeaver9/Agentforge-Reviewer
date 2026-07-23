@@ -4,6 +4,7 @@ Commands:
     redteam    run a Red Team campaign only (seed + mutations), emit attempts
     campaign   run the FULL loop: Orchestrator -> Red Team -> Judge -> Documentation
     judge      (re)judge a captured attempts file offline, emit verdicts
+    regression replay the regression suite (invariant-based); non-zero on a regression
     dashboard  print the observability rollup for a run log
 
 Examples:
@@ -60,16 +61,24 @@ def _build_redteam_llm(args, cfg):
     return None
 
 
-def _load_seed_cases(category: str | None) -> list[SeedCase]:
+def _load_seed_cases(category: str | None, regression_only: bool = False) -> list[SeedCase]:
     seeds: list[SeedCase] = []
     for f in sorted(glob.glob(str(CASES_DIR / "*.json"))):
         for d in json.loads(Path(f).read_text()):
             if category and d["attack_category"] != category:
                 continue
+            if regression_only and not d.get("regression"):
+                continue
             # only cases on an LLM-driven surface (chat/agent) run through here
             if d["target_surface"] in ("chat", "agent"):
                 seeds.append(SeedCase.from_eval(d))
     return seeds
+
+
+def _load_ground_truth() -> list[dict]:
+    """Labeled attempts that pin the Judge rubric (evals/ground_truth.json)."""
+    gt = ROOT / "evals" / "ground_truth.json"
+    return json.loads(gt.read_text()) if gt.exists() else []
 
 
 def _make_target(args):
@@ -141,7 +150,17 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         judge=_build_judge(args, cfg), redteam_llm=_build_redteam_llm(args, cfg),
         pinned_pid=args.pid, max_rounds=args.rounds,
         max_attempts_per_round=args.max_attempts,
+        ground_truth=_load_ground_truth(),
     )
+    if result.drift is not None:
+        gate = "PASS" if result.drift["passed"] else "FAIL"
+        print(f"  judge-drift gate [{gate}] "
+              f"{result.drift['agreements']}/{result.drift['total']} labeled cases agree "
+              f"(rubric {result.drift['rubric_version']})")
+    if result.regression is not None:
+        rs = result.regression.summary()
+        print(f"  regression (target changed): {rs['passed']}/{rs['total']} held, "
+              f"{rs['regressed']} regressed {rs['regressed_cases'] or ''}")
 
     # Persist reports for the Documentation deliverable.
     reports_path = RUNS_DIR / f"{run_id}.reports.json"
@@ -181,6 +200,45 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 findings += 1
     print(f"judged {len(attempts)} attempts -> {out} ({findings} confirmed findings)")
     return 0
+
+
+def cmd_regression(args: argparse.Namespace) -> int:
+    """Replay the regression suite against the target's current build.
+
+    Each case passes only when its *invariant* holds (the target defends), not by
+    a string match — so a reworded-but-still-broken response still fails. Exits
+    non-zero if any confirmed-then-fixed case has regressed, so it can gate a
+    deploy on a target-version change.
+    """
+    from agentforge.regression import RegressionHarness
+    cfg = cfgmod.load()
+    target = _make_target(args)
+    cases = _load_seed_cases(args.category, regression_only=True)
+    if not cases:
+        print("no regression-flagged seed cases on an LLM surface", file=sys.stderr)
+        return 2
+
+    harness = RegressionHarness(target=target, judge=_build_judge(args, cfg),
+                                pinned_pid=args.pid)
+    report = (harness.replay_with_siblings(cases, cases, cross_category=True)
+              if args.cross_category else harness.replay(cases))
+    summary = report.summary()
+
+    RUNS_DIR.mkdir(exist_ok=True)
+    out = RUNS_DIR / f"regression-{uuid4().hex[:8]}.json"
+    out.write_text(json.dumps({"summary": summary,
+                               "results": [r.__dict__ for r in report.results]}, indent=2))
+
+    print(f"replayed {summary['total']} case(s): {summary['passed']} held, "
+          f"{summary['regressed']} regressed, {summary['unreachable']} unreachable")
+    for r in report.results:
+        flag = "PASS " if r.passed else ("SKIP " if r.unreachable else "REGRESS")
+        print(f"  [{flag}] {r.case_id:14} {r.attack_category:26} verdict={r.verdict}")
+    if summary["regressed_cases"]:
+        print(f"  REGRESSED: {summary['regressed_cases']}")
+    print(f"  -> {out}")
+    # Non-zero on a real regression so CI/deploy gating can block on it.
+    return 1 if summary["regressed"] > 0 else 0
 
 
 def cmd_loadtest(args: argparse.Namespace) -> int:
@@ -283,6 +341,14 @@ def main(argv: list[str] | None = None) -> int:
 
     pb = sub.add_parser("probe", help="run deterministic HTTP probes (unauth surface)")
     pb.set_defaults(func=cmd_probe)
+
+    rg = sub.add_parser("regression", help="replay the regression suite (invariant-based)")
+    add_target_opts(rg)
+    rg.add_argument("--cross-category", action="store_true",
+                    help="also replay a bounded sample of other categories (catch cross-category regressions)")
+    rg.add_argument("--use-llm-judge", action="store_true",
+                    help="refine uncertain/partial verdicts with the JUDGE_* model")
+    rg.set_defaults(func=cmd_regression)
 
     wb = sub.add_parser("web", help="launch the local web dashboard (GUI)")
     wb.add_argument("--host", default="127.0.0.1")

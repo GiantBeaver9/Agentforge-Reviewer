@@ -57,13 +57,135 @@ auto-promoted to regression cases (`documentation.py`), so the suite grows itsel
 
 ## 3. Regression-on-version-change
 
-The Orchestrator detects a target deploy-id change (`target_changed`) and signals
-`regression_detected`; wire that to trigger the regression harness
-(`regression.py`) before any new exploration. Each regression case passes only
-when its **invariant** holds (not a string match), so a reworded-but-still-broken
-response still fails — the correct behavior for catching silent regressions.
+The Orchestrator detects a target deploy-id change (`target_changed`); the
+campaign loop now **runs the harness in-line** on that signal (`pipeline.py`
+`_run_regression`) before any new exploration, and records a `regression_report`
+event on the run's `correlation_id`. There is also a standalone gate for CI:
 
-## 4. Ops / runbook
+```bash
+# Non-zero exit on any regressed case -> blocks a deploy on version change:
+PYTHONPATH=src python -m agentforge.cli regression --pid 1 --cross-category
+```
+
+Each regression case passes only when its **invariant** holds (not a string
+match), so a reworded-but-still-broken response still fails; `--cross-category`
+also replays a bounded sample of *other* categories, so a fix that regresses a
+neighbouring category is caught, not just same-category siblings.
+
+## 4. End-to-end correlation-id trace (one finding, all four agents)
+
+Every inter-agent message shares the campaign's `correlation_id`, so a single
+finding is traceable across all four agents in the append-only store. This is a
+**real** trace pulled from a run (`camp-ec707852`, offline leaky mock), filtered
+to one `correlation_id`:
+
+```
+correlation_id: camp-ec707852
+
+producer      type                     detail
+orchestrator  orchestrator_to_redteam  cell = data_exfiltration / chat  (rationale: coverage_gap)
+redteam       redteam_to_judge         attempt att-0004143f  technique=seed      cost=$0.000285
+redteam       redteam_to_judge         attempt att-e479b142  technique=mutation  cost=$0.000291
+judge         judge_to_documentation   verdict=success sev=critical  → attempt att-0004143f
+judge         judge_to_documentation   verdict=success sev=critical  → attempt att-e479b142
+                                        → Documentation emits AF-FIND-* for each success verdict
+```
+
+Read it top-to-bottom: the Orchestrator picked the cell → the Red Team ran a seed
+plus a mutation (each carrying its per-attempt cost estimate) → the Judge returned
+an independent verdict per attempt, keyed back by `attempt_id` → Documentation
+turned each `success` into a report. One `grep <correlation_id>` on the run log
+reconstructs the whole chain — no cross-referencing, no scrape. Reproduce:
+
+```bash
+PYTHONPATH=src python -m agentforge.cli campaign --dry-run --mock-policy leaky --rounds 1 --max-attempts 2
+grep <campaign_id> runs/<run>.observability.jsonl        # every hop, one id
+```
+
+The same `correlation_id` also tags the `drift_check`, `regression_report`, and
+`cost` events, so the gates and spend for a run join to it too.
+
+## 5. Architecture Decision Records (ADRs)
+
+The load-bearing design decisions, in ADR form (context → decision →
+consequence), so an integrator inherits the *why*, not just the code.
+
+**ADR-001 — Deterministic cores, LLMs only where judgement pays.**
+*Context:* attack generation is high-volume and grading must be reproducible.
+*Decision:* every agent has a deterministic core (Judge rubric, Orchestrator
+scoring, Red Team mutation operators, probes, regression); an LLM is an optional
+refinement behind a fail-soft interface.
+*Consequence:* the platform builds and runs at ~$0 (see COST_ANALYSIS
+§"Development spend"), CI needs no model, and an LLM outage degrades quality, not
+availability. Cost is a workload knob (`u`, `f`), not a fixed tax.
+
+**ADR-002 — Judge is structurally independent of the Red Team.**
+*Context:* a grader that can see the attacker's goal has a conflict of interest.
+*Decision:* the Judge gets only the transcript + the safe-behavior invariant —
+never the attack goal or the Red Team's self-assessment — and must run a
+*different* model family (generator ≠ grader). Every verdict carries a
+`rubric_version` for drift detection.
+*Consequence:* no self-grading; drift is detectable across runs; model choice is
+made empirically via `check_ground_truth()`, not by vendor.
+
+**ADR-003 — Versioned JSON-Schema contracts at every agent seam.**
+*Context:* four agents plus external consumers (SIEM, ticketing) must interoperate
+without breaking on change.
+*Decision:* every inter-agent message is a versioned schema (`contracts/v1/*`),
+validated on both produce and consume; a single append-only JSONL store keyed by
+`correlation_id` is the substrate.
+*Consequence:* downstreams integrate against a schema, not a scrape; a breaking
+change is a new schema version, not a silent field rename; the store is the
+Orchestrator's input *and* the dashboard's, so one source drives both.
+
+**ADR-004 — Cost is accounted per attempt and gates the budget breaker.**
+*Context:* a live campaign spends the target's LLM budget; "halt when cost
+accumulates without signal" is a requirement, not a nice-to-have.
+*Decision:* each attempt carries a deterministic `cost_usd` estimate (`costs.py`);
+the Orchestrator accumulates it and halts on `budget_exceeded`, and the LLM Judge
+path records its own cost.
+*Consequence:* the dashboard cost metric is real (not always-zero) and the budget
+breaker actually fires; estimation is deterministic so a replay accounts
+identically and the gate is safe to trust.
+
+**ADR-005 — Regression pass/fail is by invariant, triggered on version change.**
+*Context:* a reworded-but-still-broken response must not silently "pass"; a new
+deploy must be re-checked before more budget is spent on it.
+*Decision:* a confirmed exploit becomes a deterministic case whose pass condition
+is the *invariant* holding (target defended), not a string match; the
+Orchestrator fires the harness the moment the target's deploy id changes, and the
+harness also replays cross-category neighbours.
+*Consequence:* silent regressions are caught, a fix that trades away a neighbouring
+category's defense is caught, and the suite grows itself as findings are confirmed.
+
+**ADR-006 — Build vs. configure: classic web checks are deterministic probes.**
+*Context:* unauth endpoints, forged args, and rate-limit behavior are the wrong
+job for an expensive, drifty LLM.
+*Decision:* those invariants live in a deterministic probe harness
+(`probes.py`) that renders findings the same way the LLM path does, so both feed
+one report; the LLM is reserved for the semantic, multi-turn surface.
+*Consequence:* the cheap, high-certainty checks cost $0 and never drift, and the
+two halves share one findings pipeline and one fix-validation loop.
+
+## 6. Interface diffs (what changed at each seam, and compatibility)
+
+All contracts are `v1`; changes so far have been **additive and backward
+compatible** (optional fields — an older consumer ignores them, a validator still
+passes):
+
+| Seam / schema | Change | Compatibility |
+|---|---|---|
+| `redteam_to_judge` `target_metadata.cost_usd` | now populated per attempt (was schema-present but always empty) | additive value; consumers that ignored it are unaffected |
+| `judge_to_documentation` `decision_path` | records deterministic vs llm provenance | optional field; older logs default to `deterministic` |
+| `redteam_to_judge` `attack_source` | records deterministic vs llm generation | optional field; same default |
+| Observability store | new event `type`s: `drift_check`, `regression_report`, `cost` | additive; rollups filter by `type`, so unknown types are ignored by old readers |
+| Eval schema | `observed_behavior` / `result` now populated on seed cases | schema unchanged (fields already defined); additive data |
+
+No `v2` was required: every change is a value now being filled or a new event
+type the existing rollups already tolerate. A breaking change would bump the
+schema `const` version and ship `contracts/v2/`.
+
+## 7. Ops / runbook
 
 | Task | Command |
 |---|---|
@@ -84,7 +206,7 @@ TLS.
 cost; a scheduled job can diff `summary()` against the last run and page on a new
 critical or a pass-rate drop in any (category × surface) cell.
 
-## 5. Dependencies & rate limits
+## 8. Dependencies & rate limits
 
 | Dependency | Auth | Limit handling |
 |---|---|---|
@@ -98,7 +220,7 @@ Judge/Red Team cores) requires **only Python 3.11+ stdlib + `httpx`/`pydantic`/
 The LLM adapters are optional and fail soft, so their outage degrades quality,
 never availability.
 
-## 6. Packaging
+## 9. Packaging
 
 - **Self-contained** under `agentforge/` — no coupling to the OpenEMR app it
   tests beyond the HTTP interface.
