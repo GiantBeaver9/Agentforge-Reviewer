@@ -222,3 +222,57 @@ def test_loadtest_job_runs(monkeypatch):
     job = web._JOBS[jid]
     assert job["status"] == "done", job
     assert len(job["result"]["levels"]) == 2
+
+
+def test_cookie_login_logout_flow(monkeypatch):
+    import http.cookiejar
+    import urllib.parse
+    monkeypatch.setenv("AGENTFORGE_WEB_USER", "grader")
+    monkeypatch.setenv("AGENTFORGE_WEB_PASSWORD", "s3cret")
+    port = _free_port()
+    server = ThreadingHTTPServer(("127.0.0.1", port), web.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    cj = http.cookiejar.CookieJar()
+    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    try:
+        # No session -> API returns 401 (not a redirect loop / Basic dialog).
+        try:
+            op.open(base + "/api/state"); assert False, "expected 401"
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        # The login form is served unauthenticated.
+        r = op.open(urllib.request.Request(base + "/login", headers={"Accept": "text/html"}))
+        assert r.status == 200 and b"Sign in" in r.read()
+        # Wrong credentials set no cookie.
+        op.open(base + "/login",
+                data=urllib.parse.urlencode({"username": "grader", "password": "x"}).encode())
+        assert not any(c.name == "af_session" and c.value for c in cj)
+        # Correct credentials set a session cookie and land on the panel.
+        op.open(base + "/login",
+                data=urllib.parse.urlencode({"username": "grader", "password": "s3cret"}).encode())
+        assert any(c.name == "af_session" and c.value for c in cj)
+        # The cookie authenticates the API (no HTTP Basic header at all).
+        assert op.open(base + "/api/state").status == 200
+        # Logout clears the cookie -> signed out (deleting the cookie also would).
+        op.open(base + "/logout")
+        try:
+            op.open(base + "/api/state"); assert False, "expected 401 after logout"
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+    finally:
+        server.shutdown()
+
+
+def test_session_token_signing_rejects_tamper(monkeypatch):
+    monkeypatch.setenv("AGENTFORGE_WEB_USER", "u")
+    monkeypatch.setenv("AGENTFORGE_WEB_PASSWORD", "p")
+    import base64 as _b64
+    tok = web._make_session("u")
+    assert web._valid_session(tok) == "u"
+    # A forged token (right shape, wrong signature) is rejected — you cannot mint
+    # a session for another user without the server secret.
+    forged = _b64.urlsafe_b64encode(b"admin|9999999999|deadbeefsig").decode()
+    assert web._valid_session(forged) is None
+    assert web._valid_session("not-even-base64!!") is None
+    assert web._valid_session(web._make_session("u", now=0)) is None  # expired

@@ -21,13 +21,17 @@ from __future__ import annotations
 
 import base64
 import glob
+import hashlib
 import hmac
 import json
 import os
 import threading
+import time
 import traceback
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -314,6 +318,89 @@ def _auth_credentials() -> tuple[str, str] | None:
     return (user, pw) if user and pw else None
 
 
+# --------------------------------------------------------------------------- #
+#  Cookie-session login (a real, cookie-based session — NOT HTTP Basic)
+#
+#  Why: HTTP Basic credentials are cached by the browser and are NOT cookies, so
+#  clearing cookies never signs you out, there is no logout, and a stale cached
+#  credential can wedge a browser into a 401 loop. A signed, stateless session
+#  cookie fixes all three: deleting the cookie (or /logout) signs out, login is a
+#  form (no browser dialog / XHR-401 loop), and it behaves identically in every
+#  browser. HTTP Basic is still accepted as a fallback for curl/CLI/CI.
+# --------------------------------------------------------------------------- #
+_SESSION_COOKIE = "af_session"
+_SESSION_TTL = 8 * 3600  # seconds
+
+
+def _session_secret() -> bytes:
+    """Signing key: an explicit secret if set, else derived from the configured
+    credentials so a password change invalidates outstanding sessions."""
+    explicit = os.environ.get("AGENTFORGE_WEB_SECRET")
+    if explicit:
+        return explicit.encode()
+    creds = _auth_credentials()
+    base = f"{creds[0]}:{creds[1]}" if creds else "unconfigured"
+    return hashlib.sha256(("af-session-v1:" + base).encode()).digest()
+
+
+def _make_session(user: str, now: int | None = None) -> str:
+    issued = int(now if now is not None else time.time())
+    payload = f"{user}|{issued}"
+    sig = hmac.new(_session_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode()
+
+
+def _valid_session(token: str, now: int | None = None) -> str | None:
+    """Return the user if the token is a valid, unexpired, correctly-signed
+    session; else None."""
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        user, issued, sig = raw.rsplit("|", 2)
+        payload = f"{user}|{issued}"
+        expect = hmac.new(_session_secret(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expect):
+            return None
+        cur = int(now if now is not None else time.time())
+        if cur - int(issued) > _SESSION_TTL:
+            return None
+        return user
+    except Exception:  # noqa: BLE001 — any parse failure is simply "not valid"
+        return None
+
+
+_LOGIN_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentForge — sign in</title>
+<style>
+  :root{color-scheme:light dark}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;
+    font:14px/1.5 system-ui,sans-serif;background:#0f1420;color:#e7edf6}
+  @media(prefers-color-scheme:light){body{background:#f4f6fb;color:#141c28}}
+  form{background:#182031;border:1px solid #273246;border-radius:12px;padding:28px;
+    width:320px}
+  @media(prefers-color-scheme:light){form{background:#fff;border-color:#e2e8f2}}
+  h1{font-size:18px;margin:0 0 4px} .sub{color:#93a1b5;font-size:12px;margin:0 0 18px}
+  label{display:block;font-size:12px;color:#93a1b5;margin:12px 0 4px}
+  input{width:100%;padding:9px 10px;border-radius:8px;border:1px solid #273246;
+    background:#0f1420;color:inherit;font:inherit}
+  @media(prefers-color-scheme:light){input{background:#f4f6fb;border-color:#e2e8f2}}
+  button{width:100%;margin-top:18px;padding:10px;border:0;border-radius:8px;
+    background:#5b9dff;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+  .err{color:#e5484d;font-size:13px;margin:12px 0 0}
+</style></head><body>
+<form method="POST" action="/login" autocomplete="on">
+  <h1>⚔️ AgentForge</h1>
+  <p class="sub">Sign in to the control panel</p>
+  <label for="username">Username</label>
+  <input id="username" name="username" autocomplete="username" autofocus required>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+  <!--ERR-->
+</form></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "AgentForge/1.0"
 
@@ -338,31 +425,64 @@ class Handler(BaseHTTPRequestHandler):
             # login prompt would be futile since no credentials exist to accept.
             body = (b'{"error":"dashboard authentication is not configured; set '
                     b'AGENTFORGE_WEB_USER and AGENTFORGE_WEB_PASSWORD to enable login"}')
-            self.send_response(503)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self._send(503, body, "application/json")
             return False
+        # 1) A valid session cookie (the normal browser path after /login).
+        if self._session_user() is not None:
+            return True
+        # 2) HTTP Basic — kept as a fallback for curl / CLI / CI.
         header = self.headers.get("Authorization", "")
         if header.startswith("Basic "):
             try:
                 decoded = base64.b64decode(header[6:]).decode("utf-8", "replace")
                 user, _, pw = decoded.partition(":")
-                # constant-time compare to avoid timing oracles
                 if (hmac.compare_digest(user, creds[0])
                         and hmac.compare_digest(pw, creds[1])):
                     return True
             except Exception:  # noqa: BLE001
                 pass
-        body = b'{"error":"authentication required"}'
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="AgentForge"')
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        # Not authenticated. A browser navigation goes to the login FORM (no
+        # native Basic dialog, so no cached-credential loop); an API/XHR request
+        # gets a clean 401 the frontend turns into a redirect to /login.
+        if self._is_browser_navigation():
+            self.send_response(303)
+            self.send_header("Location", "/login")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        else:
+            self._send(401, b'{"error":"authentication required"}', "application/json")
         return False
+
+    # ---- session helpers on the handler ------------------------------------
+    def _session_user(self) -> str | None:
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        try:
+            jar = SimpleCookie(raw)
+        except Exception:  # noqa: BLE001
+            return None
+        morsel = jar.get(_SESSION_COOKIE)
+        return _valid_session(morsel.value) if morsel else None
+
+    def _is_browser_navigation(self) -> bool:
+        path = urlparse(self.path).path
+        accept = self.headers.get("Accept", "")
+        return (self.command == "GET" and not path.startswith("/api/")
+                and "text/html" in accept)
+
+    def _is_https(self) -> bool:
+        # Behind a TLS-terminating proxy (Railway/Render) the client scheme is in
+        # X-Forwarded-Proto; only then may the cookie carry the Secure flag.
+        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip() == "https"
+
+    def _set_session_cookie(self, token: str, clear: bool = False) -> str:
+        attrs = [f"{_SESSION_COOKIE}={'' if clear else token}", "Path=/",
+                 "HttpOnly", "SameSite=Lax"]
+        attrs.append("Max-Age=0" if clear else f"Max-Age={_SESSION_TTL}")
+        if self._is_https():
+            attrs.append("Secure")
+        return "; ".join(attrs)
 
     def _send(self, code: int, body: bytes, ctype: str) -> None:
         self.send_response(code)
@@ -384,6 +504,44 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    # ---- login / logout (cookie session) -----------------------------------
+    def _login_page(self, error: bool = False) -> None:
+        if _auth_credentials() is None:      # fail-closed when unconfigured
+            return self._send(503, b'{"error":"authentication is not configured"}',
+                              "application/json")
+        if self._session_user() is not None:  # already signed in
+            self.send_response(303); self.send_header("Location", "/")
+            self.send_header("Content-Length", "0"); self.end_headers()
+            return
+        banner = ('<p class="err">Incorrect username or password.</p>' if error else "")
+        html = _LOGIN_HTML.replace("<!--ERR-->", banner)
+        self._send(200, html.encode(), "text/html; charset=utf-8")
+
+    def _login_submit(self) -> None:
+        creds = _auth_credentials()
+        if creds is None:
+            return self._send(503, b'{"error":"authentication is not configured"}',
+                              "application/json")
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        form = parse_qs(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+        user = (form.get("username") or [""])[0]
+        pw = (form.get("password") or [""])[0]
+        if hmac.compare_digest(user, creds[0]) and hmac.compare_digest(pw, creds[1]):
+            self.send_response(303)
+            self.send_header("Set-Cookie", self._set_session_cookie(_make_session(user)))
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0"); self.end_headers()
+        else:
+            # Re-render the form with an error — a form, so no browser-dialog loop.
+            self.send_response(303); self.send_header("Location", "/login?e=1")
+            self.send_header("Content-Length", "0"); self.end_headers()
+
+    def _logout(self) -> None:
+        self.send_response(303)
+        self.send_header("Set-Cookie", self._set_session_cookie("", clear=True))
+        self.send_header("Location", "/login")
+        self.send_header("Content-Length", "0"); self.end_headers()
+
     def do_GET(self):  # noqa: N802
         # A single bad file or unexpected error must never take the panel down;
         # always return a clean JSON error rather than a half-sent 500.
@@ -391,6 +549,10 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == "/healthz":          # unauthenticated liveness for the PaaS
                 return self._json({"ok": True, "service": "agentforge"})
+            if path == "/login":            # login form (unauthenticated)
+                return self._login_page(error=urlparse(self.path).query.startswith("e"))
+            if path == "/logout":
+                return self._logout()
             if not self._check_auth():
                 return
             self._route_get(path)
@@ -422,9 +584,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         try:
+            path = urlparse(self.path).path
+            if path == "/login":            # credential submit (unauthenticated)
+                return self._login_submit()
             if not self._check_auth():
                 return
-            path = urlparse(self.path).path
             body = self._body()
             if path == "/api/campaign":
                 return self._json({"job_id": _start_job("campaign", _run_campaign_job, body)})
@@ -496,6 +660,7 @@ _INDEX_HTML = r"""<!doctype html>
 <header><h1>⚔️ AgentForge</h1>
   <span class="sub">control panel — multi-agent adversarial evaluation of the Clinical Co-Pilot</span>
   <span class="sub" id="llmStatus" style="margin-left:auto"></span>
+  <a class="sub" href="/logout" style="color:var(--acc);text-decoration:none">Sign out</a>
 </header>
 <div class="wrap">
   <div class="left">
@@ -560,7 +725,11 @@ const $ = s => document.querySelector(s);
 const sevClass = s => "sev-" + (s||"low");
 let poll = null;
 
-function caps(){ fetch("/api/state").then(r=>r.json()).then(st=>{
+// If a session expires mid-use, an API call returns 401 — send the user to the
+// login form rather than letting the page silently fail (no reload loop).
+function J(r){ if(r.status===401){ location.href="/login"; throw new Error("unauth"); } return r.json(); }
+
+function caps(){ fetch("/api/state").then(J).then(st=>{
   const sel=$("#category"); (st.categories||[]).forEach(c=>{
     const o=document.createElement("option"); o.value=c; o.textContent=c; sel.appendChild(o); });
   window._caps = st.live_caps; renderRuns(st.runs); renderLlm(st.llm); updateLiveWarn();
@@ -598,7 +767,7 @@ $("#dry").addEventListener("change", updateLiveWarn);
 function launch(url, payload, btn){
   btn.disabled=true;
   fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{
+    body:JSON.stringify(payload)}).then(J).then(d=>{
     if(d.job_id){ watch(d.job_id); } else { alert(d.error||"failed"); btn.disabled=false; }
   }).catch(e=>{ alert(e); btn.disabled=false; });
 }
@@ -616,14 +785,14 @@ $("#runLoad").addEventListener("click", ()=> launch("/api/loadtest",{n:+$("#load
 function watch(jobId){
   $("#jobCard").style.display="block";
   if(poll) clearInterval(poll);
-  poll = setInterval(()=> fetch("/api/job/"+jobId).then(r=>r.json()).then(job=>{
+  poll = setInterval(()=> fetch("/api/job/"+jobId).then(J).then(job=>{
     const st=job.status||"?";
     $("#jobStatus").className="pill s-"+st; $("#jobStatus").textContent=st;
     $("#jobLog").textContent=(job.log||[]).join("\n");
     if(st==="done"||st==="error"){
       clearInterval(poll); poll=null;
       ["#runCamp","#runProbe","#runLoad"].forEach(s=>$(s).disabled=false);
-      renderJobResult(job); fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs));
+      renderJobResult(job); fetch("/api/state").then(J).then(s=>renderRuns(s.runs));
     }
   }), 1200);
 }
@@ -704,7 +873,7 @@ $("#runs").addEventListener("click", e=>{
 });
 
 function openDetail(file, kind){
-  fetch("/api/file/"+encodeURIComponent(file)).then(r=>r.json()).then(d=>{
+  fetch("/api/file/"+encodeURIComponent(file)).then(J).then(d=>{
     $("#detailCard").style.display="block"; $("#detailTitle").textContent=file;
     if(kind==="probe"){ $("#detail").innerHTML=probeTable(d.results||d||[]); return; }
     if(kind==="loadtest"){ $("#detail").innerHTML=loadTable(Array.isArray(d)?d:(d.levels||[])); return; }
@@ -767,7 +936,7 @@ $("#detail").addEventListener("click", e=>{
 });
 
 function renderTrends(){
-  fetch("/api/history").then(r=>r.json()).then(h=>{
+  fetch("/api/history").then(J).then(h=>{
     $("#histBackend").textContent = h.backend ? "· "+h.backend : "";
     const el=$("#trends"), s=(h.series||[]);
     if(!s.length){ el.innerHTML = h.error
@@ -810,7 +979,7 @@ function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>(
   {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 caps(); updateLiveWarn(); renderTrends();
-setInterval(()=>{ if(!poll){ fetch("/api/state").then(r=>r.json()).then(s=>renderRuns(s.runs)); renderTrends(); } }, 5000);
+setInterval(()=>{ if(!poll){ fetch("/api/state").then(J).then(s=>renderRuns(s.runs)); renderTrends(); } }, 5000);
 </script>
 </body></html>"""
 
@@ -833,8 +1002,9 @@ def main(host: str | None = None, port: int | None = None) -> None:
     RUNS_DIR.mkdir(exist_ok=True)
 
     if _auth_credentials() is not None:
-        print("auth: HTTP Basic REQUIRED on every route except /healthz "
-              "(AGENTFORGE_WEB_USER/PASSWORD)")
+        print("auth: cookie-session login at /login (AGENTFORGE_WEB_USER/PASSWORD); "
+              "HTTP Basic also accepted for curl/CLI. Sign out at /logout. Every "
+              "route except /healthz requires it.")
     else:
         print("auth: LOCKED — AGENTFORGE_WEB_USER/PASSWORD are not set, so the "
               "dashboard refuses every route except /healthz (503). Set both to "

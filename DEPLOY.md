@@ -49,21 +49,36 @@ no code change.
 ### Dashboard access control (REQUIRED — the login gate)
 | Var | Meaning |
 |---|---|
-| `AGENTFORGE_WEB_USER` | HTTP Basic username for the dashboard |
-| `AGENTFORGE_WEB_PASSWORD` | HTTP Basic password |
+| `AGENTFORGE_WEB_USER` | dashboard login username |
+| `AGENTFORGE_WEB_PASSWORD` | dashboard login password |
+| `AGENTFORGE_WEB_SECRET` | *(optional)* explicit session-signing key; if unset it is derived from the username+password (a password change then invalidates old sessions) |
 
-Auth is **mandatory and fail-closed**. Every route except `/healthz` requires a
-valid login; the panel can launch runs (even a dry-run spins up a campaign), so
-an open panel is a self-DoS vector and is not allowed. Three states:
+Auth is **mandatory and fail-closed**. Login is a **cookie session**: you sign in
+at `/login` (a real form), get a signed, HttpOnly session cookie, and **sign out
+at `/logout`** (or by deleting the cookie). This is deliberately *not* HTTP Basic
+for the browser — Basic credentials are cached outside cookies, so they can't be
+cleared by deleting cookies and a stale cached credential can wedge a browser in
+a 401 loop. HTTP Basic is still **accepted** for `curl`/CLI/CI convenience. Every
+route except `/healthz` requires a valid session or Basic header. States:
 
-- **Both vars set** → the browser shows a login prompt; valid credentials serve,
-  bad/missing ones get `401`.
+- **Both vars set** → `/login` serves the form; valid credentials set the session
+  cookie and land on the panel; an unauthenticated browser hitting a page is
+  redirected to `/login`; an unauthenticated API/XHR call gets `401`.
 - **Either var unset** → the dashboard is **locked**: every route except
   `/healthz` returns `503` ("authentication is not configured…"). Nothing runs.
 - `/healthz` is always open (no data) so Railway's liveness probe still works.
+- The session cookie carries `Secure` automatically when served over HTTPS
+  (detected via `X-Forwarded-Proto`, which Railway/Render set), `HttpOnly`, and
+  `SameSite=Lax`; it expires after 8h.
 
 Set both in Railway → **Variables**, then redeploy. The startup log prints
-`auth: HTTP Basic REQUIRED …` when configured, or `auth: LOCKED …` when not.
+`auth: cookie-session login at /login …` when configured, or `auth: LOCKED …` when not.
+
+> **If a browser is stuck on the old build:** the previous version used HTTP
+> Basic, whose credentials the browser caches *outside* cookies — deleting
+> cookies won't clear them. Fully quit the browser (or use its "clear HTTP
+> auth"/incognito) once after upgrading; from then on `/logout` and clearing
+> cookies both work.
 
 #### How to verify the gate (for a reviewer)
 
